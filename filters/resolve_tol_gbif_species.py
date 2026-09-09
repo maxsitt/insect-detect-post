@@ -255,7 +255,7 @@ def load_previous_resolution(output_path: Path) -> pl.DataFrame | None:
     """
     if not output_path.exists():
         return None
-    return pl.read_csv(output_path).with_columns(pl.col("gbif_taxon_key").cast(pl.Int64, strict=False))
+    return pl.read_csv(output_path, schema_overrides={"gbif_taxon_key": pl.Int64})
 
 
 def resolve_tol_gbif_species() -> bool:
