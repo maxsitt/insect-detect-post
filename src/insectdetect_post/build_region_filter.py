@@ -34,6 +34,7 @@ from insectdetect_post.asset_manager import compute_sha256, ensure_asset
 from insectdetect_post.constants import (
     FILTER_ASSETS_JSON,
     FILTERS_PATH,
+    MIN_OCCURRENCE_COUNT,
     PHYLUM_FILTER,
     PHYLUM_TAXON_KEYS,
 )
@@ -197,7 +198,7 @@ def _fetch_facet(country: str, min_occurrence_count: int) -> dict:
     )
 
 
-def get_country_taxon_keys(country: str, min_occurrence_count: int = 3) -> set[int]:
+def get_country_taxon_keys(country: str, min_occurrence_count: int) -> set[int]:
     """Fetch all GBIF taxon keys with occurrence records in a country.
 
     Requests GBIF's complete 'taxonKey' occurrence facet in one call, restricted server-side
@@ -230,7 +231,7 @@ def get_country_taxon_keys(country: str, min_occurrence_count: int = 3) -> set[i
 def build_region_filter_csv(
     country: str = "DE",
     force_refresh: bool = False,
-    min_occurrence_count: int = 3,
+    min_occurrence_count: int = MIN_OCCURRENCE_COUNT,
     progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> Path:
     """Resolve a species-list CSV for a country from cache or by querying GBIF.
