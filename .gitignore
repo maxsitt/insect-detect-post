@@ -1,6 +1,7 @@
 # Insect Detect Post project-specific
 configs/*.yaml
 filters/tol_gbif_species_*.csv
+filters/tol_gbif_species_*.json
 filters/tol_gbif_taxon_keys_*.csv
 models/*.onnx
 models/*.pt
