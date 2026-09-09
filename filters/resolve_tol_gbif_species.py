@@ -61,6 +61,11 @@ MAX_RETRIES = 6
 REQUEST_TIMEOUT_S = 10
 MAX_BACKOFF_S = 20.0
 
+# GBIF taxon ranks allowed to resolve to a taxon key (species or lower)
+SPECIES_OR_LOWER_RANKS = frozenset({
+    "SPECIES", "SUBSPECIES", "VARIETY", "SUBVARIETY", "FORM", "SUBFORM",
+})
+
 
 def fetch_tol_species_records() -> list[dict[str, str]]:
     """Fetch the TOL species list without loading the CLIP model.
@@ -102,12 +107,19 @@ def _backoff_seconds(error: Exception, attempt: int) -> float:
 def resolve_species_to_gbif(name: str, phylum: str | None = None) -> dict[str, object]:
     """Resolve a single TOL species name to a GBIF backbone taxon key.
 
-    Taxon key is only set for a species-level match (rank == 'SPECIES' and matchType != 'HIGHERRANK').
-    For synonyms, the accepted taxon's key rather than the synonym's own key is used.
+    Queries GBIF's name match endpoint with strict=True, so a misspelling yields matchType
+    'NONE' instead of silently matching a different species. strict=True also makes GBIF ignore
+    any classification context, so `phylum` is only used to verify the result, never sent.
+
+    For a synonym, gbif_taxon_key, gbif_rank and gbif_canonical_name describe the accepted taxon,
+    while gbif_status keeps describing the matched name, 'SYNONYM' still flags the TOL name.
+
+    A taxon key is only set at species rank or below and never for matchType 'HIGHERRANK', since
+    GBIF answers a genus name with a placeholder usage such as 'Bombus spec' at species rank.
 
     Args:
         name: TOL species scientific name.
-        phylum: Optional phylum passed as disambiguating context to name_backbone().
+        phylum: Optional expected phylum, compared against the phylum GBIF returns.
 
     Returns:
         Dict with keys: gbif_taxon_key (int | None), gbif_match_type (str),
@@ -119,14 +131,20 @@ def resolve_species_to_gbif(name: str, phylum: str | None = None) -> dict[str, o
     for attempt in range(MAX_RETRIES):
         try:
             result = gbif_species.name_backbone(
-                scientificName=name, taxonRank="species", phylum=phylum, strict=True,
-                timeout=REQUEST_TIMEOUT_S
+                scientificName=name, taxonRank="species", strict=True, timeout=REQUEST_TIMEOUT_S
             )
             break
+        except HTTPError as e:
+            status = e.response.status_code if e.response is not None else None
+            if status is not None and 400 <= status < 500 and status != 429:
+                raise ValueError(
+                    f"GBIF rejected the name match request for '{name}' (HTTP {status})."
+                ) from e
+            last_error = e
         except Exception as e:
             last_error = e
-            if attempt < MAX_RETRIES - 1:
-                time.sleep(_backoff_seconds(e, attempt))
+        if attempt < MAX_RETRIES - 1:
+            time.sleep(_backoff_seconds(last_error, attempt))
     if result is None:
         raise RuntimeError(f"Failed to resolve '{name}' after {MAX_RETRIES} attempts: {last_error}")
 
@@ -140,27 +158,35 @@ def resolve_species_to_gbif(name: str, phylum: str | None = None) -> dict[str, o
             "gbif_match_type": match_type,
             "gbif_rank": None,
             "gbif_status": None,
-            "gbif_confidence": diagnostics.get("confidence"),
+            "gbif_confidence": None,  # GBIF reports confidence 100 for a 'NONE' match
             "gbif_canonical_name": None,
         }
 
-    is_synonym = result.get("synonym", False)
+    # For a synonym, the accepted taxon is the one the taxon key should point at
     accepted_usage = result.get("acceptedUsage")
-    if is_synonym and accepted_usage is not None:
-        taxon_key = accepted_usage.get("key")
-    else:
-        taxon_key = usage.get("key")
+    resolved_usage = accepted_usage if result.get("synonym", False) and accepted_usage else usage
 
-    if usage.get("rank") != "SPECIES" or match_type == "HIGHERRANK":
+    resolved_rank = resolved_usage.get("rank")
+    taxon_key = resolved_usage.get("key")
+    if resolved_rank not in SPECIES_OR_LOWER_RANKS or match_type == "HIGHERRANK":
         taxon_key = None
+
+    if phylum is not None and taxon_key is not None:
+        gbif_phylum = next(
+            (entry.get("name") for entry in result.get("classification", [])
+             if entry.get("rank") == "PHYLUM"), None
+        )
+        if gbif_phylum is not None and gbif_phylum != phylum:
+            logger.warning("'%s' resolved to GBIF phylum '%s', expected '%s' (taxon key %s)",
+                           name, gbif_phylum, phylum, taxon_key)
 
     return {
         "gbif_taxon_key": int(taxon_key) if taxon_key is not None else None,
         "gbif_match_type": match_type,
-        "gbif_rank": usage.get("rank"),
+        "gbif_rank": resolved_rank,
         "gbif_status": usage.get("status"),
         "gbif_confidence": diagnostics.get("confidence"),
-        "gbif_canonical_name": usage.get("canonicalName"),
+        "gbif_canonical_name": resolved_usage.get("canonicalName"),
     }
 
 

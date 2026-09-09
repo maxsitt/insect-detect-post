@@ -550,14 +550,15 @@ class PipelineRunner(QObject):
         device = self.config.device
 
         model_path = MODELS_PATH / model_name
-        if not model_path.exists():
-            logger.info("Model '%s' not found locally, downloading...", model_name)
-            try:
-                model_path = ensure_asset(
-                    model_name, MODELS_JSON, progress_callback=self._progress_callback
-                )
-            except KeyError as e:
+        try:
+            model_path = ensure_asset(
+                model_name, MODELS_JSON, progress_callback=self._progress_callback
+            )
+        except KeyError as e:
+            # Not a registered asset: fall back to a user-supplied model file if present
+            if not model_path.exists():
                 raise FileNotFoundError(f"Model not found: {model_path}") from e
+            logger.debug("Model '%s' is not a registered asset, using the local file.", model_name)
 
         logger.info("Crop directory: %s", crop_dir)
         logger.info("Total crops: %d", len(self._crop_file_cache))

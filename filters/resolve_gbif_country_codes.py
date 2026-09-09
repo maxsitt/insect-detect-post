@@ -22,7 +22,7 @@ from pathlib import Path
 
 import polars as pl
 import requests
-from requests.exceptions import HTTPError, RequestException
+from requests.exceptions import RequestException
 
 from insectdetect_post.constants import FILTERS_PATH
 
@@ -34,6 +34,9 @@ OUTPUT_CSV = FILTERS_PATH / "gbif_country_codes.csv"
 
 # GBIF's country vocabulary endpoint
 GBIF_COUNTRY_ENUM_URL = "https://api.gbif.org/v1/enumeration/country"
+
+# Request headers for GBIF API calls
+REQUEST_HEADERS = {"User-Agent": "insect-detect-post (https://github.com/maxsitt/insect-detect-post)"}
 
 # Retry/backoff parameters for transient failures
 MAX_RETRIES = 4
@@ -50,11 +53,13 @@ def fetch_gbif_country_codes() -> list[dict[str, str]]:
     last_error: Exception | None = None
     for attempt in range(MAX_RETRIES):
         try:
-            response = requests.get(GBIF_COUNTRY_ENUM_URL, timeout=REQUEST_TIMEOUT_S)
+            response = requests.get(
+                GBIF_COUNTRY_ENUM_URL, headers=REQUEST_HEADERS, timeout=REQUEST_TIMEOUT_S
+            )
             response.raise_for_status()
             entries = response.json()
             return [{"iso2": entry["iso2"], "name": entry["title"]} for entry in entries]
-        except (HTTPError, RequestException) as e:
+        except RequestException as e:
             last_error = e
             if attempt < MAX_RETRIES - 1:
                 capped_wait = min(2 ** attempt, MAX_BACKOFF_S)

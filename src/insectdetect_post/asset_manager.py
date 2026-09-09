@@ -5,13 +5,14 @@ License:  GNU AGPLv3 (https://choosealicense.com/licenses/agpl-3.0/)
 Author:   Maximilian Sittinger (https://github.com/maxsitt)
 Docs:     https://maxsitt.github.io/insect-detect-docs/
 
-Downloads assets listed in JSON registries on first use and verifies them by SHA-256.
+Downloads assets listed in JSON registries and verifies them by SHA-256 on every use,
+so that updating a registry entry replaces an outdated local copy.
 
 Functions:
     compute_sha256(): Compute and return the SHA-256 checksum of a file.
     download_file(): Download a file from the given URL to a local destination path.
     list_registered_filenames(): Return the filenames of all assets in a registry.
-    ensure_asset(): Resolve a registered asset's local path, downloading and verifying it on first use.
+    ensure_asset(): Resolve a registered asset's local path, downloading and verifying it.
 """
 
 from __future__ import annotations
@@ -83,27 +84,42 @@ def _resolve_and_verify(
     dest_dir: Path,
     progress_callback: Callable[[int, int, str], None] | None = None
 ) -> Path:
-    """Download url into dest_dir (skipped if already present) and verify its SHA-256.
+    """Ensure dest_dir holds the file registered at url, verified by SHA-256.
 
-    Raises ValueError and deletes the file on checksum mismatch. Returns the local path.
+    An existing local file is re-verified on every call and replaced if it does not match
+    the registered checksum, so updating a registry entry propagates to installs that
+    already downloaded the previous version. Downloads are staged to a '.part' file and
+    swapped in only after verification, so a failed download leaves any existing copy intact.
+
+    Raises ValueError and deletes the staged file on checksum mismatch. Returns the local path.
     """
     archive_name = url.split("/")[-1]
     archive_path = dest_dir / archive_name
 
     if archive_path.exists():
-        logger.debug("Asset '%s' is already present, skipping download.", name)
-        return archive_path
+        actual = compute_sha256(archive_path)
+        if actual == expected_sha256:
+            logger.debug("Asset '%s' is already present and matches the registry.", name)
+            return archive_path
+        logger.warning(
+            "Local '%s' does not match the checksum registered for asset '%s' "
+            "(registered %s..., found %s...). Replacing it with the registered version.",
+            archive_name, name, expected_sha256[:12], actual[:12]
+        )
 
+    # Download to a temporary file so a failed download cannot destroy a usable local copy
+    staged_path = archive_path.with_name(f"{archive_name}.part")
     logger.info("Downloading '%s'...", name)
-    download_file(url, archive_path, progress_callback=progress_callback)
+    download_file(url, staged_path, progress_callback=progress_callback)
 
     logger.info("Verifying checksum for '%s'...", name)
-    actual = compute_sha256(archive_path)
+    actual = compute_sha256(staged_path)
     if actual != expected_sha256:
-        archive_path.unlink()
+        staged_path.unlink()
         raise ValueError(
             f"SHA-256 mismatch for '{archive_name}': expected {expected_sha256}, got {actual}"
         )
+    staged_path.replace(archive_path)
 
     logger.info("Asset '%s' downloaded and verified.", name)
     return archive_path
@@ -119,7 +135,10 @@ def ensure_asset(
     registry_path: Path,
     progress_callback: Callable[[int, int, str], None] | None = None
 ) -> Path:
-    """Resolve a registered asset's local path, downloading and verifying it on first use.
+    """Resolve a registered asset's local path, downloading and verifying it.
+
+    The local file is verified against the registry on every call,
+    so a changed registry entry replaces an outdated local copy.
 
     Args:
         filename: Filename of the asset (URL basename), as referenced by a registry entry.

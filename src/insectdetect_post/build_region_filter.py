@@ -7,7 +7,8 @@ Docs:     https://maxsitt.github.io/insect-detect-docs/
 
 Resolves which BioCLIP Tree of Life species have GBIF occurrence records in a given
 country, by combining a TOL-to-GBIF taxon key mapping with GBIF's occurrence search
-API. Results are cached per country so repeat runs need no network access.
+API. Results are cached per country so repeat runs need no network access, alongside a
+JSON provenance record so a cache built from an outdated mapping is rebuilt automatically.
 
 Functions:
     load_tol_gbif_taxon_keys(): Load the TOL-to-GBIF taxon key mapping, downloading it on first use.
@@ -17,17 +18,19 @@ Functions:
 
 from __future__ import annotations
 
+import json
 import logging
 import random
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import polars as pl
 from pygbif import occurrences
 from requests.exceptions import HTTPError, RequestException
 
-from insectdetect_post.asset_manager import ensure_asset
+from insectdetect_post.asset_manager import compute_sha256, ensure_asset
 from insectdetect_post.constants import (
     FILTER_ASSETS_JSON,
     FILTERS_PATH,
@@ -53,10 +56,13 @@ if PHYLUM_FILTER is not None:
         )
 
 # GBIF occurrence facet query settings
-FACET_PAGE_SIZE = 1000
+FACET_LIMIT = 1_200_000
 MAX_RETRIES = 4
-REQUEST_TIMEOUT_S = 30
+REQUEST_TIMEOUT_S = 120
 MAX_BACKOFF_S = 20.0
+
+# Age at which a cached region filter is reported as outdated
+CACHE_MAX_AGE_DAYS = 90
 
 
 def load_tol_gbif_taxon_keys(
@@ -80,6 +86,67 @@ def load_tol_gbif_taxon_keys(
     )
 
 
+def _cache_stale_reason(meta_path: Path) -> str | None:
+    """Return why a cached region filter should be rebuilt, or None if it is still valid.
+
+    The cache is keyed by country and min_occurrence_count through its filename, so the
+    remaining input that can change underneath it is the TOL-to-GBIF mapping. A cache
+    written before provenance was recorded has no way to prove which mapping produced it
+    and is therefore treated as stale once.
+    """
+    if not meta_path.exists():
+        return "it has no provenance record, so the mapping that produced it is unknown"
+
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return f"its provenance record '{meta_path.name}' could not be read"
+
+    if not TOL_GBIF_TAXON_KEYS_CSV.exists():
+        logger.debug("TOL-to-GBIF mapping is not present locally, keeping the cached region filter.")
+        return None
+
+    if meta.get("mapping_sha256") != compute_sha256(TOL_GBIF_TAXON_KEYS_CSV):
+        return "the TOL-to-GBIF mapping has changed since it was built"
+
+    built = meta.get("built_utc")
+    if isinstance(built, str):
+        try:
+            age = datetime.now(UTC) - datetime.fromisoformat(built)
+        except ValueError:
+            age = timedelta(0)
+        if age > timedelta(days=CACHE_MAX_AGE_DAYS):
+            logger.warning(
+                "Cached region filter is %d days old: GBIF may have added new species since "
+                "it was built. Delete '%s' to rebuild it automatically at the next run.",
+                age.days, meta_path.with_suffix(".csv")
+            )
+    return None
+
+
+def _write_cache_metadata(
+    meta_path: Path,
+    country: str,
+    min_occurrence_count: int,
+    mapping_sha256: str,
+    facet_entries: int,
+    species: int
+) -> None:
+    """Record which inputs produced a cached region filter, alongside the CSV."""
+    meta_path.write_text(
+        json.dumps({
+            "country": country,
+            "phylum_filter": _scope,
+            "min_occurrence_count": min_occurrence_count,
+            "mapping_sha256": mapping_sha256,
+            "gbif_facet_entries": facet_entries,
+            "species": species,
+            "built_utc": datetime.now(UTC).replace(microsecond=0).isoformat(),
+        }, indent=2) + "\n",
+        encoding="utf-8"
+    )
+
+
 def _backoff_seconds(error: Exception, attempt: int) -> float:
     """Compute the retry wait time.
 
@@ -96,8 +163,8 @@ def _backoff_seconds(error: Exception, attempt: int) -> float:
     return random.uniform(0, capped_wait)
 
 
-def _fetch_facet_page(country: str, offset: int, min_occurrence_count: int) -> dict:
-    """Fetch a single page of the GBIF 'taxonKey' occurrence facet for a country.
+def _fetch_facet(country: str, min_occurrence_count: int) -> dict:
+    """Fetch the complete GBIF 'taxonKey' occurrence facet for a country in one request.
 
     Retries transient failures (429/5xx or network errors) up to MAX_RETRIES times.
     A 4xx error other than 429 is treated as an invalid country code and raised
@@ -108,7 +175,7 @@ def _fetch_facet_page(country: str, offset: int, min_occurrence_count: int) -> d
         try:
             return occurrences.search(
                 country=country, phylumKey=PHYLUM_TAXON_KEY, facet="taxonKey", limit=0,
-                taxonKey_facetLimit=FACET_PAGE_SIZE, taxonKey_facetOffset=offset,
+                taxonKey_facetLimit=FACET_LIMIT, taxonKey_facetOffset=0,
                 facetMincount=min_occurrence_count,
                 timeout=REQUEST_TIMEOUT_S,
             )
@@ -130,47 +197,34 @@ def _fetch_facet_page(country: str, offset: int, min_occurrence_count: int) -> d
     )
 
 
-def get_country_taxon_keys(
-    country: str,
-    min_occurrence_count: int = 3,
-    page_callback: Callable[[int, int], None] | None = None,
-) -> set[int]:
+def get_country_taxon_keys(country: str, min_occurrence_count: int = 3) -> set[int]:
     """Fetch all GBIF taxon keys with occurrence records in a country.
 
-    Pages through GBIF's 'taxonKey' occurrence facet until a page returns fewer than
-    FACET_PAGE_SIZE entries, restricted server-side to PHYLUM_TAXON_KEY if set. The
-    facet still blends every taxonomic rank together within that scope, so it must be
-    intersected against known species-level keys to be meaningful.
+    Requests GBIF's complete 'taxonKey' occurrence facet in one call, restricted server-side
+    to PHYLUM_TAXON_KEY if set. The facet still blends every taxonomic rank together within
+    that scope, so it must be intersected against known species-level keys to be meaningful.
 
     Args:
         country: ISO 3166-1 alpha-2 country code.
         min_occurrence_count: Minimum occurrence records for a taxon to be included.
-        page_callback: Optional callback(pages_fetched, taxa_found), invoked after each page.
-            The total page count is unknown upfront, so callers have to estimate a percentage.
 
     Raises:
         ValueError: If GBIF rejects the country code as invalid.
-        RuntimeError: If fetching fails after exhausting retries.
+        RuntimeError: If fetching fails after exhausting retries, or if the facet fills
+            FACET_LIMIT and is therefore truncated.
 
     Returns:
         Set of GBIF taxon keys observed anywhere in the country's occurrence facet.
     """
-    taxon_keys: set[int] = set()
-    offset = 0
-    page_num = 0
-    while True:
-        page = _fetch_facet_page(country, offset, min_occurrence_count)
-        counts = page["facets"][0]["counts"] if page.get("facets") else []
-        taxon_keys.update(int(entry["name"]) for entry in counts)
-        page_num += 1
-        logger.debug("Country '%s': fetched %d facet entries at offset %d", country, len(counts), offset)
-        if page_callback:
-            page_callback(page_num, len(taxon_keys))
-        if len(counts) < FACET_PAGE_SIZE:
-            break
-        offset += FACET_PAGE_SIZE
-        time.sleep(0.2)  # basic rate limiting between pages
-    return taxon_keys
+    facet = _fetch_facet(country, min_occurrence_count)
+    counts = facet["facets"][0]["counts"] if facet.get("facets") else []
+    if len(counts) >= FACET_LIMIT:
+        raise RuntimeError(
+            f"GBIF occurrence facet for country '{country}' returned {len(counts)} entries, "
+            f"filling FACET_LIMIT ({FACET_LIMIT}) -- the result is truncated."
+        )
+    logger.debug("Country '%s': fetched %d facet entries", country, len(counts))
+    return {int(entry["name"]) for entry in counts}
 
 
 def build_region_filter_csv(
@@ -182,11 +236,14 @@ def build_region_filter_csv(
     """Resolve a species-list CSV for a country from cache or by querying GBIF.
 
     The cached CSV has a single 'species' column, so it can be handed
-    directly to pybioclip with no further processing.
+    directly to pybioclip with no further processing. A JSON file of the same name records
+    which mapping and settings produced it; the cache is rebuilt automatically if the
+    TOL-to-GBIF mapping has changed since. If rebuilding fails while an existing cache is
+    present (typically an offline run), the outdated cache is used and a warning is logged.
 
     Args:
         country: ISO 3166-1 alpha-2 country code.
-        force_refresh: If True, re-query GBIF even if a cached CSV already exists.
+        force_refresh: If True, re-query GBIF even if a valid cached CSV already exists.
         min_occurrence_count: Minimum occurrence records for a taxon to be included.
         progress_callback: Optional callback(current, total, message), reporting 0-100% of this
             function's own work. Callers embedding it in a wider range should scale accordingly.
@@ -195,16 +252,23 @@ def build_region_filter_csv(
         KeyError: If the TOL-to-GBIF mapping is not a registered asset.
         ValueError: If GBIF rejects the country code, or no TOL species in the mapping have
                     any occurrence record in the given country.
-        RuntimeError: If fetching from GBIF fails after exhausting retries.
+        RuntimeError: If fetching from GBIF fails after exhausting retries and no cached
+                      CSV exists to fall back on.
 
     Returns:
         Path to the (now-cached) per-country species-list CSV.
     """
     country = country.upper()
     cache_path = FILTERS_PATH / f"tol_gbif_species_{_scope}_minocc{min_occurrence_count}_{country}.csv"
-    if cache_path.exists() and not force_refresh:
-        logger.info("Using cached region filter for '%s': '%s'", country, cache_path)
-        return cache_path
+    meta_path = cache_path.with_suffix(".json")
+    cache_exists = cache_path.exists()
+
+    if cache_exists and not force_refresh:
+        stale_reason = _cache_stale_reason(meta_path)
+        if stale_reason is None:
+            logger.info("Using cached region filter for '%s': '%s'", country, cache_path)
+            return cache_path
+        logger.info("Rebuilding region filter for '%s': %s.", country, stale_reason)
 
     if progress_callback:
         progress_callback(
@@ -218,23 +282,26 @@ def build_region_filter_csv(
         if progress_callback:
             progress_callback(int(pct / 10), 100, message)  # 0-10%
 
-    mapping = load_tol_gbif_taxon_keys(download_progress)
+    try:
+        mapping = load_tol_gbif_taxon_keys(download_progress)
+        mapping_sha256 = compute_sha256(TOL_GBIF_TAXON_KEYS_CSV)
 
-    if progress_callback:
-        progress_callback(10, 100, f"Querying GBIF for species recorded in country '{country}'...")
-    logger.info("Querying GBIF for species recorded in country '%s'...", country)
-
-    def query_progress(pages_fetched: int, taxa_found: int) -> None:
         if progress_callback:
-            # Harmonic saturation keeps the bar advancing over the realistic page range
-            pct = 10 + int(80 * pages_fetched / (pages_fetched + 30))
-            progress_callback(
-                pct, 100,
-                f"Querying GBIF for country '{country}': page {pages_fetched} "
-                f"({taxa_found} taxa found so far)..."
-            )
+            progress_callback(10, 100, f"Querying GBIF for species recorded in country '{country}'...")
+        logger.info("Querying GBIF for species recorded in country '%s'...", country)
 
-    country_taxon_keys = get_country_taxon_keys(country, min_occurrence_count, query_progress)
+        country_taxon_keys = get_country_taxon_keys(country, min_occurrence_count)
+    except (OSError, RuntimeError, RequestException) as e:
+        if not cache_exists:
+            raise
+        logger.warning(
+            "Could not rebuild the region filter for '%s' (%s). Falling back to the existing "
+            "cached filter, which may be outdated: '%s'", country, e, cache_path
+        )
+        return cache_path
+
+    logger.info("Country '%s': %d taxa with >=%d occurrence records",
+                country, len(country_taxon_keys), min_occurrence_count)
 
     if progress_callback:
         progress_callback(90, 100, f"Matching species for country '{country}'...")
@@ -252,6 +319,10 @@ def build_region_filter_csv(
 
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     matched.write_csv(cache_path)
+    _write_cache_metadata(
+        meta_path, country, min_occurrence_count,
+        mapping_sha256, len(country_taxon_keys), matched.height
+    )
     logger.info("Built region filter for '%s': %d species -> '%s'", country, matched.height, cache_path)
 
     if progress_callback:
