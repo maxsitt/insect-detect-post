@@ -55,7 +55,7 @@ AI-based classification and metadata aggregation into a single configurable pipe
 
 Windows:
 
-``` shell
+``` bash
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
@@ -69,34 +69,34 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 Windows:
 
-``` shell
+``` bash
 winget install --id Git.Git -e --source winget
 ```
 
 Linux (Debian/Ubuntu):
 
 ``` bash
-apt-get install git
+sudo apt update && sudo apt install git
 ```
 
 macOS:
 
 ``` bash
-brew install git
+xcode-select --install
 ```
 
 ### Install post-processing software
 
 Clone the `insect-detect-post` repository:
 
-``` shell
+``` bash
 git clone https://github.com/maxsitt/insect-detect-post
 ```
 
 Open a Terminal in your `insect-detect-post` directory or change directory
 (use full path after `cd`):
 
-``` shell
+``` bash
 cd insect-detect-post
 ```
 
@@ -104,19 +104,19 @@ There are three installation options:
 
 1. CPU-only version:
 
-    ``` shell
+    ``` bash
     uv sync --extra cpu
     ```
 
 2. GPU with CUDA 13 support:
 
-    ``` shell
+    ``` bash
     uv sync --extra cuda132
     ```
 
 3. Legacy GPU with CUDA 12 support:
 
-    ``` shell
+    ``` bash
     uv sync --extra cuda126
     ```
 
@@ -133,7 +133,7 @@ Restart the application afterwards to use the new version.
 
 You can also update from the command line:
 
-``` shell
+``` bash
 cd insect-detect-post
 uv run --no-sync update
 ```
@@ -154,7 +154,7 @@ packages while they are in use, so if the dependencies changed, the required
 
 Start the GUI by running:
 
-``` shell
+``` bash
 uv run --no-sync gui
 ```
 
@@ -218,7 +218,9 @@ classification:
     rank: species
     filter_arthropods:
       enabled: true
-      taxon: Arthropoda
+      taxa:
+      - Insecta
+      - Arachnida
       country: all
   ultralytics:
     enabled: false
@@ -326,8 +328,8 @@ Classification settings applied to cropped detections.
 | `classification.bioclip.enabled`                   | `bool`                                                              | `true`                                           | Enable classification with the BioCLIP 2 model (via [`pybioclip`](https://github.com/Imageomics/pybioclip) package).        |
 | `classification.bioclip.batch_size`                | `int` (1-256)                                                       | `16`                                             | Batch size used for BioCLIP inference.                                                                                      |
 | `classification.bioclip.rank`                      | `kingdom`, `phylum`, `class`, `order`, `family`, `genus`, `species` | `species`                                        | Predict to selected taxonomic level. For ranks above species, species-level probabilities are summed up to the target rank. |
-| `classification.bioclip.filter_arthropods.enabled` | `bool`                                                              | `true`                                           | Restrict BioCLIP predictions to Arthropoda (or subtaxa) and/or GBIF occurrence in selected country.                         |
-| `classification.bioclip.filter_arthropods.taxon`   | `Arthropoda`, `Insecta`                                             | `Arthropoda`                                     | Taxon that BioCLIP predictions are restricted to (currently only Arthropoda and Insecta are supported).                     |
+| `classification.bioclip.filter_arthropods.enabled` | `bool`                                                              | `true`                                           | Restrict BioCLIP predictions to the selected arthropod groups and/or GBIF occurrence in selected country.                   |
+| `classification.bioclip.filter_arthropods.taxa`    | `all`, `Insecta`, `Arachnida`, `Diplopoda`, `Chilopoda`, `Isopoda`  | `[Insecta, Arachnida]`                           | Arthropod groups that predictions are restricted to; multiple can be selected. `all` covers the whole phylum Arthropoda.    |
 | `classification.bioclip.filter_arthropods.country` | country code, or `all`                                              | `all`                                            | Country that BioCLIP Arthropoda predictions are restricted to (based on GBIF occurrence records). `all` for no restriction. |
 | `classification.ultralytics.enabled`               | `bool`                                                              | `false`                                          | Enable classification with a custom Ultralytics YOLO classification model.                                                  |
 | `classification.ultralytics.batch_size`            | `int` (1-256)                                                       | `16`                                             | Batch size used for Ultralytics inference.                                                                                  |

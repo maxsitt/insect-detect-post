@@ -612,7 +612,7 @@ class PipelineRunner(QObject):
             batch_size=batch_size,
             rank=rank,
             filter_arthropods_enabled=filter_arthropods.enabled,
-            filter_taxon=filter_arthropods.taxon,
+            filter_taxa=filter_arthropods.taxa,
             filter_country=filter_arthropods.country,
             device=device,
             progress_callback=self._progress_callback

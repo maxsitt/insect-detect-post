@@ -24,23 +24,36 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Literal, cast, get_args
+from typing import Any, Literal, cast, get_args, get_origin
 
 import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from insectdetect_post.constants import (
-    BIOCLIP_COUNTRY_OPTIONS,
     CONFIG_DEFAULT_PATH,
     CONFIG_SELECTOR_PATH,
     CONFIGS_PATH,
+    get_bioclip_country_options,
 )
 
 # Initialize logger for this module
 logger = logging.getLogger(__name__)
 
+class _ConfigDumper(yaml.SafeDumper):
+    """SafeDumper that writes tuples as plain YAML sequences.
+
+    Config files are read with yaml.safe_load(), so the writer has to stay within the same
+    safe subset. The default Dumper would emit a '!!python/tuple' tag that safe_load then
+    refuses to read back. Tuples reach this point because qt-parameters returns them for
+    list-valued widgets, and GUI values are written before Pydantic coerces them to lists.
+    """
+
+
+_ConfigDumper.add_representer(tuple, yaml.representer.SafeRepresenter.represent_list)
+
 # YAML dump settings for consistent formatting when writing config files
 _YAML_DUMP_KWARGS: dict[str, Any] = {
+    "Dumper": _ConfigDumper,
     "default_flow_style": False,
     "allow_unicode": True,
     "sort_keys": False,
@@ -79,13 +92,25 @@ class ProcessingConfig(BaseModel):
 
 
 class BioclipFilterArthropodsConfig(BaseModel):
-    """Filter BioCLIP predictions by taxon and/or a region.
+    """Filter BioCLIP predictions by taxa and/or a region.
 
+    'taxa': One or more arthropod groups to restrict predictions to.
+            'all' covers the whole phylum Arthropoda and supersedes any other selection.
     'country': Country code recognized by the GBIF API, or 'all' for no region restriction.
     """
     enabled: bool = True
-    taxon: Literal["Arthropoda", "Insecta"] = "Arthropoda"
-    country: Literal[BIOCLIP_COUNTRY_OPTIONS] = "all"  # pyright: ignore[reportInvalidTypeForm]
+    taxa: list[Literal["all", "Insecta", "Arachnida", "Diplopoda", "Chilopoda", "Isopoda"]] = (
+        Field(default=["Insecta", "Arachnida"], min_length=1)
+    )
+    country: Literal[get_bioclip_country_options()] = "all"  # pyright: ignore[reportInvalidTypeForm]
+
+    @field_validator("taxa")
+    @classmethod
+    def _normalize_taxa(cls, taxa: list[str]) -> list[str]:
+        """Collapse to 'all' if selected, otherwise drop duplicates while keeping the order."""
+        if "all" in taxa:
+            return ["all"]
+        return list(dict.fromkeys(taxa))
 
 
 class BioclipConfig(BaseModel):
@@ -288,6 +313,9 @@ def get_field_literals(model_cls: type[BaseModel], *field_path: str) -> tuple[An
         *field_path: Sequence of field name strings forming the path to the
                      target field (e.g. 'classification', 'sort_crops', 'level').
 
+    A list-valued field (e.g. 'list[Literal[...]]', as used for multi-select settings) is
+    unwrapped one level, so the allowed values are returned rather than the Literal itself.
+
     Returns:
         Tuple of allowed literal values, or empty tuple if the path is invalid
         or the field is not annotated with Literal.
@@ -306,7 +334,11 @@ def get_field_literals(model_cls: type[BaseModel], *field_path: str) -> tuple[An
     if field_info is None:
         return ()
 
-    return get_args(field_info.annotation)
+    annotation = field_info.annotation
+    args = get_args(annotation)
+    if get_origin(annotation) in (list, tuple) and args:
+        return get_args(args[0])
+    return args
 
 
 def _clamp_raw(

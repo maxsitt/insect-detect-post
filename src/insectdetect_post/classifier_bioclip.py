@@ -6,7 +6,7 @@ Author:   Maximilian Sittinger (https://github.com/maxsitt)
 Docs:     https://maxsitt.github.io/insect-detect-docs/
 
 Runs pybioclip's TreeOfLifeClassifier over pre-scanned images in memory-bounded chunks,
-optionally restricted by taxon and country, and writes results to the metadata CSV.
+optionally restricted by taxa and country, and writes results to the metadata CSV.
 
 Functions:
     classify_imgs_bioclip(): Classify images in chunks using the BioCLIP 2 model and write results to CSV.
@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import time
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import polars as pl
@@ -36,11 +36,39 @@ from insectdetect_post.constants import RANK_ORDER
 # Create module-level logger
 logger = logging.getLogger(__name__)
 
-# Mapping of filter_arthropods.taxon values to the BioCLIP Rank used for create_taxa_filter()
-_TAXON_FILTER_RANK: dict[str, Rank] = {
-    "Arthropoda": Rank.PHYLUM,
-    "Insecta": Rank.CLASS,
+# BioCLIP Rank and taxon name each filter_arthropods.taxa value maps to for create_taxa_filter()
+_TAXA_RANKS: dict[str, tuple[Rank, str]] = {
+    "all": (Rank.PHYLUM, "Arthropoda"),
+    "Insecta": (Rank.CLASS, "Insecta"),
+    "Arachnida": (Rank.CLASS, "Arachnida"),
+    "Diplopoda": (Rank.CLASS, "Diplopoda"),
+    "Chilopoda": (Rank.CLASS, "Chilopoda"),
+    "Isopoda": (Rank.ORDER, "Isopoda"),
 }
+
+
+def _build_taxa_mask(classifier: TreeOfLifeClassifier, taxa: Sequence[str]) -> list[bool]:
+    """Return a species mask covering every selected taxon, across taxonomic ranks.
+
+    Values are grouped by rank so create_taxa_filter() is called once per rank, and the resulting
+    masks are OR-ed: a species is kept if it matches any selection.
+
+    Args:
+        classifier: Loaded TreeOfLifeClassifier whose label data the mask is built against.
+        taxa: Selected filter_arthropods.taxa values, as keys of _TAXA_RANKS.
+
+    Returns:
+        Boolean mask over the classifier's species labels.
+    """
+    by_rank: dict[Rank, list[str]] = defaultdict(list)
+    for value in taxa:
+        rank, name = _TAXA_RANKS[value]
+        by_rank[rank].append(name)
+
+    masks = [classifier.create_taxa_filter(rank, names) for rank, names in by_rank.items()]
+    if len(masks) == 1:
+        return masks[0]
+    return [any(entries) for entries in zip(*masks)]
 
 
 def classify_imgs_bioclip(
@@ -50,7 +78,7 @@ def classify_imgs_bioclip(
     batch_size: int = 8,
     rank: str = "species",
     filter_arthropods_enabled: bool = False,
-    filter_taxon: str = "Arthropoda",
+    filter_taxa: Sequence[str] = ("all",),
     filter_country: str = "all",
     device: str = "cpu",
     progress_callback: Callable[[int, int, str], None] | None = None
@@ -67,8 +95,9 @@ def classify_imgs_bioclip(
         output_dir: Output directory for results.
         batch_size: Number of images to process per batch.
         rank: Taxonomic rank to predict (species-level probabilities are summed to this rank).
-        filter_arthropods_enabled: If True, restrict predictions by taxon and optionally country.
-        filter_taxon: Taxon to restrict predictions to.
+        filter_arthropods_enabled: If True, restrict predictions by taxa and optionally country.
+        filter_taxa: Taxa to restrict predictions to, as keys of _TAXA_RANKS. A species is kept
+            if it matches any of them; 'all' covers the whole phylum Arthropoda.
         filter_country: ISO 3166-1 alpha-2 country code, or "all" for no region restriction.
         device: Device to run model on ("cpu" or "cuda").
         progress_callback: Optional progress callback.
@@ -111,8 +140,9 @@ def classify_imgs_bioclip(
     cls_start_pct = 5
 
     if filter_arthropods_enabled:
-        # Create taxa filter mask for the requested taxon
-        taxon_mask = classifier.create_taxa_filter(_TAXON_FILTER_RANK[filter_taxon], [filter_taxon])
+        # Create taxa filter mask for the requested taxa
+        taxa_label = ", ".join(filter_taxa)
+        taxon_mask = _build_taxa_mask(classifier, filter_taxa)
 
         if filter_country != "all":
             def region_filter_progress(pct: int, _total: int, message: str) -> None:
@@ -132,13 +162,13 @@ def classify_imgs_bioclip(
 
         if not any(combined_mask):
             raise ValueError(
-                f"No species match taxon='{filter_taxon}' and country='{filter_country}' -- "
+                f"No species match taxa='{taxa_label}' and country='{filter_country}' -- "
                 "combined filter would exclude all predictions."
             )
 
         classifier.apply_filter(combined_mask)
-        logger.info("Applied taxon='%s', country='%s' filter: %d/%d species kept",
-                    filter_taxon, filter_country, sum(combined_mask), len(combined_mask))
+        logger.info("Applied taxa='%s', country='%s' filter: %d/%d species kept",
+                    taxa_label, filter_country, sum(combined_mask), len(combined_mask))
 
     # Compute dynamic chunk size based on available RAM
     n_species = classifier.get_txt_embeddings().shape[1]

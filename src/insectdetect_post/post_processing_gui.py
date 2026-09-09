@@ -89,6 +89,7 @@ from insectdetect_post.gui_utils import (
     resolve_and_validate_path,
     restore_enabled_values,
 )
+from insectdetect_post.multi_combo_parameter import MultiComboParameter
 from insectdetect_post.pipeline_runner import PipelineRunner
 from insectdetect_post.styled_button import StyledButton
 from insectdetect_post.update import UpdateInfo, sync_command
@@ -115,7 +116,7 @@ _FIELD_CONSTRAINTS: dict[str, dict[str, int | float | None]] = {
 _DEFAULTS = AppConfig()
 BIOCLIP_RANK_OPTIONS = get_field_literals(AppConfig, "classification", "bioclip", "rank")
 FILTER_TAXA_OPTIONS = get_field_literals(
-    AppConfig, "classification", "bioclip", "filter_arthropods", "taxon"
+    AppConfig, "classification", "bioclip", "filter_arthropods", "taxa"
 )
 FILTER_REGION_OPTIONS = get_field_literals(
     AppConfig, "classification", "bioclip", "filter_arthropods", "country"
@@ -417,14 +418,16 @@ class ConfigWidget(QWidget):
 
         filter_arthropods_form, self.filter_arthropods_box = create_param_form(
             bioclip_form, "filter_arthropods", "Filter Arthropods",
-            tooltip="Restrict predictions to arthropods or insects (and optionally a region)"
+            tooltip="Restrict predictions to the selected arthropod groups (and optionally a region)"
         )
-        taxon_select = ComboParameter("taxon")
-        taxon_select.set_label("Taxon")
-        taxon_select.set_items(FILTER_TAXA_OPTIONS)
-        taxon_select.set_default(_DEFAULTS.classification.bioclip.filter_arthropods.taxon)
-        taxon_select.setToolTip("Force BioCLIP to only predict species within the selected taxon")
-        filter_arthropods_form.add_parameter(taxon_select)
+        taxa_select = MultiComboParameter("taxa")
+        taxa_select.set_label("Taxa")
+        taxa_select.set_items(FILTER_TAXA_OPTIONS)
+        taxa_select.set_exclusive_value("all")
+        taxa_select.set_min_selection(1)  # an empty selection is rejected by the config schema
+        taxa_select.set_default(tuple(_DEFAULTS.classification.bioclip.filter_arthropods.taxa))
+        taxa_select.setToolTip("Force BioCLIP to only predict species within the selected taxa")
+        filter_arthropods_form.add_parameter(taxa_select)
 
         country_select = ComboParameter("country")
         country_select.set_label("Country")

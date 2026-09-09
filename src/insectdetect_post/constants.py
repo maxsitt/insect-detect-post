@@ -9,6 +9,7 @@ Docs:     https://maxsitt.github.io/insect-detect-docs/
 import csv
 import os
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 
 
@@ -76,20 +77,23 @@ PHYLUM_TAXON_KEYS: dict[str, int] = {
 }
 
 
-def _load_gbif_country_codes() -> tuple[str, ...]:
-    """Load ISO 3166-1 alpha-2 country codes recognized by the GBIF API."""
+@cache
+def get_bioclip_country_options() -> tuple[str, ...]:
+    """Return the country codes accepted by the GBIF API, prefixed with 'all'.
+
+    'all' means no BioCLIP region restriction. The CSV is read on first call rather than at
+    import, so that importing any other constant from this module does not require it to exist.
+
+    Raises:
+        FileNotFoundError: If the country code CSV has not been generated yet.
+    """
     csv_path = FILTERS_PATH / "gbif_country_codes.csv"
     if not csv_path.exists():
         raise FileNotFoundError(
             f"'{csv_path}' not found. Run 'filters/resolve_gbif_country_codes.py' first."
         )
     with open(csv_path, "r", encoding="utf-8", newline="") as f:
-        return tuple(row["iso2"] for row in csv.DictReader(f))
-
-
-# ISO 3166-1 alpha-2 country codes accepted by the GBIF API ("all" for no BioCLIP region restriction)
-GBIF_COUNTRY_CODES: tuple[str, ...] = _load_gbif_country_codes()
-BIOCLIP_COUNTRY_OPTIONS: tuple[str, ...] = ("all", *GBIF_COUNTRY_CODES)
+        return ("all", *(row["iso2"] for row in csv.DictReader(f)))
 
 # Default thread-pool size for image processing operations (e.g. crop/overlay)
 MAX_WORKERS: int = min((os.cpu_count() or 4) + 4, 32)
