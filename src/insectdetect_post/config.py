@@ -96,21 +96,24 @@ class BioclipFilterArthropodsConfig(BaseModel):
 
     'taxa': One or more arthropod groups to restrict predictions to.
             'all' covers the whole phylum Arthropoda and supersedes any other selection.
-    'country': Country code recognized by the GBIF API, or 'all' for no region restriction.
+    'countries': One or more country codes recognized by the GBIF API. A species is kept if it
+                 occurs in any of them; 'all' means no region restriction.
     """
     enabled: bool = True
     taxa: list[Literal["all", "Insecta", "Arachnida", "Diplopoda", "Chilopoda", "Isopoda"]] = (
         Field(default=["Insecta", "Arachnida"], min_length=1)
     )
-    country: Literal[get_bioclip_country_options()] = "all"  # pyright: ignore[reportInvalidTypeForm]
+    countries: list[Literal[get_bioclip_country_options()]] = (  # pyright: ignore[reportInvalidTypeForm]
+        Field(default=["all"], min_length=1)
+    )
 
-    @field_validator("taxa")
+    @field_validator("taxa", "countries")
     @classmethod
-    def _normalize_taxa(cls, taxa: list[str]) -> list[str]:
+    def _normalize_selection(cls, values: list[str]) -> list[str]:
         """Collapse to 'all' if selected, otherwise drop duplicates while keeping the order."""
-        if "all" in taxa:
+        if "all" in values:
             return ["all"]
-        return list(dict.fromkeys(taxa))
+        return list(dict.fromkeys(values))
 
 
 class BioclipConfig(BaseModel):

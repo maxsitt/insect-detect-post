@@ -119,7 +119,7 @@ FILTER_TAXA_OPTIONS = get_field_literals(
     AppConfig, "classification", "bioclip", "filter_arthropods", "taxa"
 )
 FILTER_REGION_OPTIONS = get_field_literals(
-    AppConfig, "classification", "bioclip", "filter_arthropods", "country"
+    AppConfig, "classification", "bioclip", "filter_arthropods", "countries"
 )
 
 
@@ -429,15 +429,17 @@ class ConfigWidget(QWidget):
         taxa_select.setToolTip("Force BioCLIP to only predict species within the selected taxa")
         filter_arthropods_form.add_parameter(taxa_select)
 
-        country_select = ComboParameter("country")
-        country_select.set_label("Country")
-        country_select.set_items(FILTER_REGION_OPTIONS)
-        country_select.set_default(_DEFAULTS.classification.bioclip.filter_arthropods.country)
-        country_select.setToolTip(
-            "Force BioCLIP to only predict species within the selected country, based on GBIF "
+        countries_select = MultiComboParameter("countries")
+        countries_select.set_label("Countries")
+        countries_select.set_items(FILTER_REGION_OPTIONS)
+        countries_select.set_exclusive_value("all")
+        countries_select.set_min_selection(1)  # an empty selection is rejected by the config schema
+        countries_select.set_default(tuple(_DEFAULTS.classification.bioclip.filter_arthropods.countries))
+        countries_select.setToolTip(
+            "Force BioCLIP to only predict species within the selected countries, based on GBIF "
             "occurrence records\n(species list is built and cached automatically on first use)"
         )
-        filter_arthropods_form.add_parameter(country_select)
+        filter_arthropods_form.add_parameter(countries_select)
 
         ultralytics_form, self.ultralytics_box = create_param_form(
             self.classification_form, "ultralytics", "Ultralytics"

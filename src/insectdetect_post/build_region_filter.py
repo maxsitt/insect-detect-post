@@ -14,6 +14,7 @@ Functions:
     load_tol_gbif_taxon_keys(): Load the TOL-to-GBIF taxon key mapping, downloading it on first use.
     get_country_taxon_counts(): Fetch all GBIF taxon keys with occurrence records in a country.
     build_region_filter_csv():  Resolve a species-list CSV for a country from cache or by querying GBIF.
+    load_region_species():      Load species with GBIF occurrence records in any of the given countries.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ import json
 import logging
 import random
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -228,9 +229,9 @@ def get_country_taxon_counts(country: str, min_occurrence_count: int) -> dict[in
 
 
 def build_region_filter_csv(
-    country: str = "DE",
+    country: str,
+    min_occurrence_count: int,
     force_refresh: bool = False,
-    min_occurrence_count: int = MIN_OCCURRENCE_COUNT,
     progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> Path:
     """Resolve a species-list CSV for a country from cache or by querying GBIF.
@@ -247,8 +248,8 @@ def build_region_filter_csv(
 
     Args:
         country: ISO 3166-1 alpha-2 country code.
-        force_refresh: If True, re-query GBIF even if a valid cached CSV already exists.
         min_occurrence_count: Minimum occurrence records for a taxon to be included.
+        force_refresh: If True, re-query GBIF even if a valid cached CSV already exists.
         progress_callback: Optional callback(current, total, message), reporting 0-100% of this
             function's own work. Callers embedding it in a wider range should scale accordingly.
 
@@ -291,8 +292,10 @@ def build_region_filter_csv(
         mapping_sha256 = compute_sha256(TOL_GBIF_TAXON_KEYS_CSV)
 
         if progress_callback:
-            progress_callback(10, 100, f"Querying GBIF for species recorded in country '{country}'...")
-        logger.info("Querying GBIF for species recorded in country '%s'...", country)
+            progress_callback(
+                10, 100, f"Querying GBIF for {_scope} taxa recorded in country '{country}'..."
+            )
+        logger.info("Querying GBIF for %s taxa recorded in country '%s'...", _scope, country)
 
         country_taxon_counts = get_country_taxon_counts(country, min_occurrence_count)
     except (OSError, RuntimeError, RequestException) as e:
@@ -304,7 +307,7 @@ def build_region_filter_csv(
         )
         return cache_path
 
-    logger.info("Country '%s': %d taxa with >=%d occurrence records",
+    logger.info("Country '%s': %d GBIF taxa at any rank with >=%d occurrence records",
                 country, len(country_taxon_counts), min_occurrence_count)
 
     if progress_callback:
@@ -335,9 +338,54 @@ def build_region_filter_csv(
         meta_path, country, min_occurrence_count,
         mapping_sha256, len(country_taxon_counts), matched.height
     )
-    logger.info("Built region filter for '%s': %d species -> '%s'", country, matched.height, cache_path)
+    logger.info("Built region filter for '%s': %d of them match a BioCLIP species -> '%s'",
+                country, matched.height, cache_path)
 
     if progress_callback:
         progress_callback(100, 100, f"Built region filter for '{country}': {matched.height} species")
 
     return cache_path
+
+
+def load_region_species(
+    countries: Sequence[str],
+    min_occurrence_count: int = MIN_OCCURRENCE_COUNT,
+    force_refresh: bool = False,
+    progress_callback: Callable[[int, int, str], None] | None = None,
+) -> list[str]:
+    """Load species with GBIF occurrence records in any of the given countries.
+
+    Resolves each country separately, so every country keeps its own cache, then
+    merges the results: a species is included if it occurs in at least one of them.
+
+    Args:
+        countries: ISO 3166-1 alpha-2 country codes.
+        min_occurrence_count: Minimum occurrence records for a taxon to be included.
+        force_refresh: If True, re-query GBIF even if valid cached CSVs already exist.
+        progress_callback: Optional callback(current, total, message), reporting 0-100% across
+            all countries. Callers embedding it in a wider range should scale accordingly.
+
+    Raises:
+        KeyError: If the TOL-to-GBIF mapping is not a registered asset.
+        ValueError: If GBIF rejects a country code, or a country has no matching species.
+        RuntimeError: If fetching from GBIF fails and no cached CSV exists to fall back on.
+
+    Returns:
+        Sorted species names recorded in at least one of the countries.
+    """
+    species: set[str] = set()
+    total = len(countries)
+    for index, country in enumerate(countries):
+        def country_progress(pct: int, _total: int, message: str, index: int = index) -> None:
+            """Wrapper callback that maps one country's progress into its own slice."""
+            if progress_callback:
+                progress_callback(int((index * 100 + pct) / total), 100, message)
+
+        cache_path = build_region_filter_csv(
+            country, min_occurrence_count, force_refresh, country_progress
+        )
+        species.update(pl.read_csv(cache_path, columns=["species"])["species"].to_list())
+
+    logger.info("Region filter for %s: %d unique species across all countries",
+                ", ".join(countries), len(species))
+    return sorted(species)

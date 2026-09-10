@@ -221,7 +221,8 @@ classification:
       taxa:
       - Insecta
       - Arachnida
-      country: all
+      countries:
+      - all
   ultralytics:
     enabled: false
     batch_size: 16
@@ -323,19 +324,19 @@ Post-processing settings applied to full-frame images.
 
 Classification settings applied to cropped detections.
 
-| Setting                                            | Type / Options                                                      | Default                                          | Description                                                                                                                 |
-|----------------------------------------------------|---------------------------------------------------------------------|--------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------|
-| `classification.bioclip.enabled`                   | `bool`                                                              | `true`                                           | Enable classification with the BioCLIP 2 model (via [`pybioclip`](https://github.com/Imageomics/pybioclip) package).        |
-| `classification.bioclip.batch_size`                | `int` (1-256)                                                       | `16`                                             | Batch size used for BioCLIP inference.                                                                                      |
-| `classification.bioclip.rank`                      | `kingdom`, `phylum`, `class`, `order`, `family`, `genus`, `species` | `species`                                        | Predict to selected taxonomic level. For ranks above species, species-level probabilities are summed up to the target rank. |
-| `classification.bioclip.filter_arthropods.enabled` | `bool`                                                              | `true`                                           | Restrict BioCLIP predictions to the selected arthropod groups and/or GBIF occurrence in selected country.                   |
-| `classification.bioclip.filter_arthropods.taxa`    | `all`, `Insecta`, `Arachnida`, `Diplopoda`, `Chilopoda`, `Isopoda`  | `[Insecta, Arachnida]`                           | Arthropod groups that predictions are restricted to; multiple can be selected. `all` covers the whole phylum Arthropoda.    |
-| `classification.bioclip.filter_arthropods.country` | country code, or `all`                                              | `all`                                            | Country that BioCLIP Arthropoda predictions are restricted to (based on GBIF occurrence records). `all` for no restriction. |
-| `classification.ultralytics.enabled`               | `bool`                                                              | `false`                                          | Enable classification with a custom Ultralytics YOLO classification model.                                                  |
-| `classification.ultralytics.batch_size`            | `int` (1-256)                                                       | `16`                                             | Batch size used for Ultralytics inference.                                                                                  |
-| `classification.ultralytics.model`                 | `string`                                                            | `platform_insect-detect_yolo26s-cls_v1-0-0.onnx` | Filename of the Ultralytics classification model, downloaded automatically from the models registry on first use.           |
-| `classification.sort_crops.enabled`                | `bool`                                                              | `false`                                          | Move cropped detections into subdirectories based on the individual prediction.                                             |
-| `classification.sort_tracks.enabled`               | `bool`                                                              | `true`                                           | Move all crops belonging to a track into one subdirectory based on the track's final prediction.                            |
+| Setting                                              | Type / Options                                                      | Default                                          | Description                                                                                                                        |
+|------------------------------------------------------|---------------------------------------------------------------------|--------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------|
+| `classification.bioclip.enabled`                     | `bool`                                                              | `true`                                           | Enable classification with the BioCLIP 2 model (via [`pybioclip`](https://github.com/Imageomics/pybioclip) package).               |
+| `classification.bioclip.batch_size`                  | `int` (1-256)                                                       | `16`                                             | Batch size used for BioCLIP inference. Higher = faster, but uses more memory (GPU VRAM if device: cuda, system RAM otherwise).     |
+| `classification.bioclip.rank`                        | `kingdom`, `phylum`, `class`, `order`, `family`, `genus`, `species` | `species`                                        | Predict to selected taxonomic level. For ranks above species, species-level probabilities are summed up to the target rank.        |
+| `classification.bioclip.filter_arthropods.enabled`   | `bool`                                                              | `true`                                           | Restrict BioCLIP predictions to the selected arthropod groups and/or GBIF occurrence in the selected countries.                    |
+| `classification.bioclip.filter_arthropods.taxa`      | `all`, `Insecta`, `Arachnida`, `Diplopoda`, `Chilopoda`, `Isopoda`  | `[Insecta, Arachnida]`                           | Arthropod groups that predictions are restricted to; multiple can be selected. `all` covers the whole phylum Arthropoda.           |
+| `classification.bioclip.filter_arthropods.countries` | country codes, or `all`                                             | `[all]`                                          | Countries that predictions are restricted to (based on GBIF occurrence records). `all` for no region restriction.                  |
+| `classification.ultralytics.enabled`                 | `bool`                                                              | `false`                                          | Enable classification with a custom Ultralytics YOLO classification model.                                                         |
+| `classification.ultralytics.batch_size`              | `int` (1-256)                                                       | `16`                                             | Batch size used for Ultralytics inference. Higher = faster, but uses more memory (GPU VRAM if device: cuda, system RAM otherwise). |
+| `classification.ultralytics.model`                   | `string`                                                            | `platform_insect-detect_yolo26s-cls_v1-0-0.onnx` | Filename of the Ultralytics classification model, downloaded automatically from the models registry on first use.                  |
+| `classification.sort_crops.enabled`                  | `bool`                                                              | `false`                                          | Move cropped detections into subdirectories based on the individual prediction.                                                    |
+| `classification.sort_tracks.enabled`                 | `bool`                                                              | `true`                                           | Move all crops belonging to a track into one subdirectory based on the track's final prediction.                                   |
 
 #### Filter files
 
