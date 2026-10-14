@@ -178,7 +178,8 @@ uv run --no-sync gui
 
 Models and supporting files referenced in the configuration (e.g. classification models,
 the BioCLIP Tree of Life Arthropoda-to-GBIF taxon key mapping used to build per-country
-species filters) are downloaded automatically on first use from the release assets.
+and per-continent species filters) are downloaded automatically on first use from the
+release assets.
 
 > [!NOTE]
 > The BioCLIP 2 model and associated files are downloaded from Hugging Face on first use,
@@ -226,6 +227,8 @@ classification:
       - Insecta
       - Arachnida
       countries:
+      - all
+      continents:
       - all
   ultralytics:
     enabled: false
@@ -332,27 +335,44 @@ Post-processing settings applied to full-frame images.
 
 Classification settings applied to cropped detections.
 
-| Setting                                              | Type / Options                                                      | Default                                          | Description                                                                                                                        |
-|------------------------------------------------------|---------------------------------------------------------------------|--------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------|
-| `classification.bioclip.enabled`                     | `bool`                                                              | `true`                                           | Enable classification with the BioCLIP 2 model (via [`pybioclip`](https://github.com/Imageomics/pybioclip) package).               |
-| `classification.bioclip.batch_size`                  | `int` (1-256)                                                       | `16`                                             | Batch size used for BioCLIP inference. Higher = faster, but uses more memory (GPU VRAM if device: cuda, system RAM otherwise).     |
-| `classification.bioclip.rank`                        | `kingdom`, `phylum`, `class`, `order`, `family`, `genus`, `species` | `species`                                        | Predict to selected taxonomic level. For ranks above species, species-level probabilities are summed up to the target rank.        |
-| `classification.bioclip.filter_arthropods.enabled`   | `bool`                                                              | `true`                                           | Restrict BioCLIP predictions to the selected arthropod groups and/or GBIF occurrence in the selected countries.                    |
-| `classification.bioclip.filter_arthropods.taxa`      | `all`, `Insecta`, `Arachnida`, `Diplopoda`, `Chilopoda`, `Isopoda`  | `[Insecta, Arachnida]`                           | Arthropod groups that predictions are restricted to; multiple can be selected. `all` covers the whole phylum Arthropoda.           |
-| `classification.bioclip.filter_arthropods.countries` | country codes, or `all`                                             | `[all]`                                          | Countries that predictions are restricted to (based on GBIF occurrence records). `all` for no region restriction.                  |
-| `classification.ultralytics.enabled`                 | `bool`                                                              | `false`                                          | Enable classification with a custom Ultralytics YOLO classification model.                                                         |
-| `classification.ultralytics.batch_size`              | `int` (1-256)                                                       | `16`                                             | Batch size used for Ultralytics inference. Higher = faster, but uses more memory (GPU VRAM if device: cuda, system RAM otherwise). |
-| `classification.ultralytics.model`                   | `string`                                                            | `platform_insect-detect_yolo26s-cls_v1-0-0.onnx` | Filename of the Ultralytics classification model, downloaded automatically from the models registry on first use.                  |
-| `classification.sort_crops.enabled`                  | `bool`                                                              | `false`                                          | Move cropped detections into subdirectories based on the individual prediction.                                                    |
-| `classification.sort_tracks.enabled`                 | `bool`                                                              | `true`                                           | Move all crops belonging to a track into one subdirectory based on the track's final prediction.                                   |
+| Setting                                               | Type / Options                                                                                  | Default                                          | Description                                                                                                                                                   |
+|-------------------------------------------------------|-------------------------------------------------------------------------------------------------|--------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `classification.bioclip.enabled`                      | `bool`                                                                                          | `true`                                           | Enable classification with the BioCLIP 2 model (via [`pybioclip`](https://github.com/Imageomics/pybioclip) package).                                          |
+| `classification.bioclip.batch_size`                   | `int` (1-256)                                                                                   | `16`                                             | Batch size used for BioCLIP inference. Higher = faster, but uses more memory (GPU VRAM if device: cuda, system RAM otherwise).                                |
+| `classification.bioclip.rank`                         | `kingdom`, `phylum`, `class`, `order`, `family`, `genus`, `species`                             | `species`                                        | Predict to selected taxonomic level. For ranks above species, species-level probabilities are summed up to the target rank.                                   |
+| `classification.bioclip.filter_arthropods.enabled`    | `bool`                                                                                          | `true`                                           | Restrict BioCLIP predictions to the selected arthropod groups and/or GBIF occurrence in the selected countries or continents.                                 |
+| `classification.bioclip.filter_arthropods.taxa`       | `all`, `Insecta`, `Arachnida`, `Diplopoda`, `Chilopoda`, `Isopoda`                              | `[Insecta, Arachnida]`                           | Arthropod groups that predictions are restricted to; multiple can be selected. `all` covers the whole phylum Arthropoda.                                      |
+| `classification.bioclip.filter_arthropods.countries`  | country codes, or `all`                                                                         | `[all]`                                          | Countries that predictions are restricted to (based on GBIF occurrence records). `all` for no restriction by country. Cannot be combined with `continents`.   |
+| `classification.bioclip.filter_arthropods.continents` | `AFRICA`, `ANTARCTICA`, `ASIA`, `EUROPE`, `NORTH_AMERICA`, `OCEANIA`, `SOUTH_AMERICA`, or `all` | `[all]`                                          | Continents that predictions are restricted to (based on GBIF occurrence records). `all` for no restriction by continent. Cannot be combined with `countries`. |
+| `classification.ultralytics.enabled`                  | `bool`                                                                                          | `false`                                          | Enable classification with a custom Ultralytics YOLO classification model.                                                                                    |
+| `classification.ultralytics.batch_size`               | `int` (1-256)                                                                                   | `16`                                             | Batch size used for Ultralytics inference. Higher = faster, but uses more memory (GPU VRAM if device: cuda, system RAM otherwise).                            |
+| `classification.ultralytics.model`                    | `string`                                                                                        | `platform_insect-detect_yolo26s-cls_v1-0-0.onnx` | Filename of the Ultralytics classification model, downloaded automatically from the models registry on first use.                                             |
+| `classification.sort_crops.enabled`                   | `bool`                                                                                          | `false`                                          | Move cropped detections into subdirectories based on the individual prediction.                                                                               |
+| `classification.sort_tracks.enabled`                  | `bool`                                                                                          | `true`                                           | Move all crops belonging to a track into one subdirectory based on the track's final prediction.                                                              |
 
 #### Filter files
 
-Country filters are built on first use by querying the GBIF occurrence API (this can
-take a few minutes) and are then cached in `filters/`. The scripts that regenerate the
-underlying reference data (`filters/resolve_gbif_country_codes.py`,
+Country and continent filters are built on first use by querying the GBIF occurrence API
+(this can take a few minutes) and are then cached in `filters/`. The scripts that regenerate
+the underlying reference data (`filters/resolve_gbif_country_codes.py`,
 `filters/resolve_tol_gbif_species.py`) only need to be re-run when GBIF's country
 enumeration or the BioCLIP Tree of Life version changes.
+
+Countries and continents are assigned differently by GBIF, so a continent is not simply the
+sum of its countries:
+
+- **Countries** follow the country stated by the data publisher (or derived from the
+  coordinates), including records from coastal waters. Overseas regions belong to their
+  country, e.g. `ES` includes the Canary Islands.
+- **Continents** are assigned from the coordinates using GBIF's
+  [continent boundaries](https://github.com/gbif/continents) and cover land only. Records
+  from the sea get no continent, and records without coordinates from a country spanning two
+  continents (e.g. Russia, Turkey) get none either. Some islands fall on another continent
+  than their country, e.g. the Canary Islands and Madeira count as `AFRICA`, Cyprus and most
+  of Turkey as `ASIA`.
+
+For a camera trap on an island or in a transcontinental country, select the country rather
+than the continent.
 
 ### Metadata Processing
 

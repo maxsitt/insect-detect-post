@@ -476,6 +476,7 @@ class ValidationRun:
             "prob_quantiles": quantiles,
             "has_size_estimate": self.has_size_estimate,
             "countries": list(filter_cfg.get("countries", [])),
+            "continents": list(filter_cfg.get("continents", [])),
             "taxa_filter": list(filter_cfg.get("taxa", [])),
         }
 

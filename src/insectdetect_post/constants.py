@@ -89,6 +89,11 @@ PHYLUM_TAXON_KEYS: dict[str, int] = {
 # Minimum GBIF occurrence records required for a taxon to be included in a region filter
 MIN_OCCURRENCE_COUNT: int = 3
 
+# GBIF continent vocabulary (https://api.gbif.org/v1/enumeration/basic/Continent), prefixed with 'all'
+BIOCLIP_CONTINENT_OPTIONS: tuple[str, ...] = (
+    "all", "AFRICA", "ANTARCTICA", "ASIA", "EUROPE", "NORTH_AMERICA", "OCEANIA", "SOUTH_AMERICA",
+)
+
 
 @cache
 def get_bioclip_country_options() -> tuple[str, ...]:

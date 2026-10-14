@@ -120,8 +120,11 @@ BIOCLIP_RANK_OPTIONS = get_field_literals(AppConfig, "classification", "bioclip"
 FILTER_TAXA_OPTIONS = get_field_literals(
     AppConfig, "classification", "bioclip", "filter_arthropods", "taxa"
 )
-FILTER_REGION_OPTIONS = get_field_literals(
+FILTER_COUNTRY_OPTIONS = get_field_literals(
     AppConfig, "classification", "bioclip", "filter_arthropods", "countries"
+)
+FILTER_CONTINENT_OPTIONS = get_field_literals(
+    AppConfig, "classification", "bioclip", "filter_arthropods", "continents"
 )
 
 
@@ -419,15 +422,37 @@ class ConfigWidget(QWidget):
 
         countries_select = MultiComboParameter("countries")
         countries_select.set_label("Countries")
-        countries_select.set_items(FILTER_REGION_OPTIONS)
+        countries_select.set_items(FILTER_COUNTRY_OPTIONS)
         countries_select.set_exclusive_value("all")
         countries_select.set_min_selection(1)  # an empty selection is rejected by the config schema
         countries_select.set_default(tuple(_DEFAULTS.classification.bioclip.filter_arthropods.countries))
         countries_select.setToolTip(
             "Force BioCLIP to only predict species within the selected countries, based on GBIF "
-            "occurrence records\n(species list is built and cached automatically on first use)"
+            "occurrence records\n(species list is built and cached automatically on first use; "
+            "selecting a country resets Continents to 'all')"
         )
         filter_arthropods_form.add_parameter(countries_select)
+
+        continents_select = MultiComboParameter("continents")
+        continents_select.set_label("Continents")
+        continents_select.set_items(FILTER_CONTINENT_OPTIONS)
+        continents_select.set_exclusive_value("all")
+        continents_select.set_min_selection(1)  # an empty selection is rejected by the config schema
+        continents_select.set_default(tuple(_DEFAULTS.classification.bioclip.filter_arthropods.continents))
+        continents_select.setToolTip(
+            "Force BioCLIP to only predict species within the selected continents, based on GBIF "
+            "occurrence records\n(species list is built and cached automatically on first use; "
+            "selecting a continent resets Countries to 'all')"
+        )
+        filter_arthropods_form.add_parameter(continents_select)
+
+        # Only one region type can restrict predictions: restricting one resets the other
+        def reset_if_restricted(value: tuple, other: MultiComboParameter) -> None:
+            if value != ("all",):
+                other.set_value(("all",))
+
+        countries_select.value_changed.connect(lambda v: reset_if_restricted(v, continents_select))
+        continents_select.value_changed.connect(lambda v: reset_if_restricted(v, countries_select))
 
         ultralytics_form, self.ultralytics_box = create_param_form(
             self.classification_form, "ultralytics", "Ultralytics"

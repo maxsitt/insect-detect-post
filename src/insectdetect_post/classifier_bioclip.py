@@ -6,7 +6,7 @@ Author:   Maximilian Sittinger (https://github.com/maxsitt)
 Docs:     https://maxsitt.github.io/insect-detect-docs/
 
 Runs pybioclip's TreeOfLifeClassifier over pre-scanned images in memory-bounded chunks,
-optionally restricted by taxa and countries, and writes results to the metadata CSV.
+optionally restricted by taxa and a region, and writes results to the metadata CSV.
 
 Functions:
     classify_imgs_bioclip(): Classify images in chunks using the BioCLIP 2 model and write results to CSV.
@@ -24,7 +24,7 @@ import polars as pl
 import psutil
 from bioclip import Rank, TreeOfLifeClassifier
 
-from insectdetect_post.build_region_filter import load_region_species
+from insectdetect_post.build_region_filter import RegionType, load_region_species
 from insectdetect_post.classifier_utils import (
     format_time,
     parse_crop_name,
@@ -80,6 +80,7 @@ def classify_imgs_bioclip(
     filter_arthropods_enabled: bool = False,
     filter_taxa: Sequence[str] = ("all",),
     filter_countries: Sequence[str] = ("all",),
+    filter_continents: Sequence[str] = ("all",),
     device: str = "cpu",
     progress_callback: Callable[[int, int, str], None] | None = None
 ) -> Path:
@@ -95,11 +96,14 @@ def classify_imgs_bioclip(
         output_dir: Output directory for results.
         batch_size: Number of images to process per batch.
         rank: Taxonomic rank to predict (species-level probabilities are summed to this rank).
-        filter_arthropods_enabled: If True, restrict predictions by taxa and optionally countries.
+        filter_arthropods_enabled: If True, restrict predictions by taxa and optionally a region.
         filter_taxa: Taxa to restrict predictions to, as keys of _TAXA_RANKS. A species is kept
             if it matches any of them; 'all' covers the whole phylum Arthropoda.
         filter_countries: ISO 3166-1 alpha-2 country codes. A species is kept if it occurs in
-            any of them; 'all' means no region restriction.
+            any of them; 'all' means no restriction by country.
+        filter_continents: GBIF continents. A species is kept if it occurs in any of them;
+            'all' means no restriction by continent. Only one of filter_countries and
+            filter_continents can restrict the region.
         device: Device to run model on ("cpu" or "cuda").
         progress_callback: Optional progress callback.
 
@@ -108,6 +112,18 @@ def classify_imgs_bioclip(
     """
     if not crop_file_list:
         raise ValueError("No crop files provided for classification")
+
+    # Region type and codes to restrict predictions to, if any, plus a label for messages
+    region: tuple[RegionType, Sequence[str]] | None = None
+    region_label = "region='all'"
+    if "all" not in filter_countries:
+        region = ("country", filter_countries)
+        region_label = f"countries='{', '.join(filter_countries)}'"
+    if "all" not in filter_continents:
+        if region is not None:
+            raise ValueError("Countries and continents cannot both restrict the region filter")
+        region = ("continent", filter_continents)
+        region_label = f"continents='{', '.join(filter_continents)}'"
 
     start_time = time.time()
     bioclip_rank = Rank[rank.upper()]
@@ -143,10 +159,9 @@ def classify_imgs_bioclip(
     if filter_arthropods_enabled:
         # Create taxa filter mask for the requested taxa
         taxa_label = ", ".join(filter_taxa)
-        countries_label = ", ".join(filter_countries)
         taxon_mask = _build_taxa_mask(classifier, filter_taxa)
 
-        if "all" not in filter_countries:
+        if region is not None:
             def region_filter_progress(pct: int, _total: int, message: str) -> None:
                 """Wrapper callback that maps region filter progress to global progress."""
                 nonlocal cls_start_pct
@@ -155,9 +170,9 @@ def classify_imgs_bioclip(
                     # Scale progress from 3% to 10%
                     progress_callback(3 + int(pct / 100 * 7), 100, message)
 
-            # Merge the countries into a single species list, so the mask is built in one pass
+            # Merge the regions into a single species list, so the mask is built in one pass
             region_species = load_region_species(
-                filter_countries, progress_callback=region_filter_progress
+                *region, progress_callback=region_filter_progress
             )
             region_mask = classifier.create_taxa_filter(Rank.SPECIES, region_species)
             combined_mask = [t and r for t, r in zip(taxon_mask, region_mask)]
@@ -166,13 +181,13 @@ def classify_imgs_bioclip(
 
         if not any(combined_mask):
             raise ValueError(
-                f"No species match taxa='{taxa_label}' and countries='{countries_label}' -- "
+                f"No species match taxa='{taxa_label}' and {region_label} -- "
                 "combined filter would exclude all predictions."
             )
 
         classifier.apply_filter(combined_mask)
-        logger.info("Applied taxa='%s', countries='%s', filter: %d/%d species kept",
-                    taxa_label, countries_label, sum(combined_mask), len(combined_mask))
+        logger.info("Applied taxa='%s', %s filter: %d/%d species kept",
+                    taxa_label, region_label, sum(combined_mask), len(combined_mask))
 
     # Compute dynamic chunk size based on available RAM
     n_species = classifier.get_txt_embeddings().shape[1]

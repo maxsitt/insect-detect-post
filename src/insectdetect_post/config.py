@@ -30,6 +30,7 @@ import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from insectdetect_post.constants import (
+    BIOCLIP_CONTINENT_OPTIONS,
     CONFIG_DEFAULT_PATH,
     CONFIG_SELECTOR_PATH,
     CONFIGS_PATH,
@@ -97,7 +98,10 @@ class BioclipFilterArthropodsConfig(BaseModel):
     'taxa': One or more arthropod groups to restrict predictions to.
             'all' covers the whole phylum Arthropoda and supersedes any other selection.
     'countries': One or more country codes recognized by the GBIF API. A species is kept if it
-                 occurs in any of them; 'all' means no region restriction.
+                 occurs in any of them; 'all' means no restriction by country.
+    'continents': One or more GBIF continents. A species is kept if it occurs in any of them;
+                  'all' means no restriction by continent. Only one of 'countries' and
+                  'continents' can restrict the region.
     """
     enabled: bool = True
     taxa: list[Literal["all", "Insecta", "Arachnida", "Diplopoda", "Chilopoda", "Isopoda"]] = (
@@ -106,14 +110,26 @@ class BioclipFilterArthropodsConfig(BaseModel):
     countries: list[Literal[get_bioclip_country_options()]] = (  # pyright: ignore[reportInvalidTypeForm]
         Field(default=["all"], min_length=1)
     )
+    continents: list[Literal[BIOCLIP_CONTINENT_OPTIONS]] = (  # pyright: ignore[reportInvalidTypeForm]
+        Field(default=["all"], min_length=1)
+    )
 
-    @field_validator("taxa", "countries")
+    @field_validator("taxa", "countries", "continents")
     @classmethod
     def _normalize_selection(cls, values: list[str]) -> list[str]:
         """Collapse to 'all' if selected, otherwise drop duplicates while keeping the order."""
         if "all" in values:
             return ["all"]
         return list(dict.fromkeys(values))
+
+    @model_validator(mode="after")
+    def _single_region_type(self) -> BioclipFilterArthropodsConfig:
+        """Reject a region restricted by both countries and continents."""
+        if self.countries != ["all"] and self.continents != ["all"]:
+            raise ValueError(
+                "'countries' and 'continents' cannot both restrict the region -- set one of them to 'all'."
+            )
+        return self
 
 
 class BioclipConfig(BaseModel):
