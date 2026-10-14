@@ -37,6 +37,7 @@ from insectdetect_post.constants import (
     MODELS_JSON,
     MODELS_PATH,
     RANK_ORDER,
+    TRACK_KEY_COLUMNS,
     OutputLayout,
 )
 from insectdetect_post.dataset_context import CropOnlyEntry, DatasetContext
@@ -783,8 +784,7 @@ class PipelineRunner(QObject):
         final_lazy = pl.scan_csv(final_metadata_path, infer_schema_length=0)
         final_cols = final_lazy.collect_schema().names()
 
-        id_cols = ["device_id", "session_id", "track_id"]
-        missing_final = [c for c in id_cols if c not in final_cols]
+        missing_final = [c for c in TRACK_KEY_COLUMNS if c not in final_cols]
         if missing_final:
             logger.warning("Missing columns %s in final metadata, skipping sort", missing_final)
             return
@@ -800,7 +800,7 @@ class PipelineRunner(QObject):
 
         logger.info("Sorting by columns: %s", path_cols)
 
-        needed_final = id_cols + path_cols
+        needed_final = [*TRACK_KEY_COLUMNS, *path_cols]
         df_final = (
             final_lazy
             .select(needed_final)
@@ -814,7 +814,7 @@ class PipelineRunner(QObject):
 
         crop_lazy = pl.scan_csv(classified_metadata_path, infer_schema_length=0)
         crop_cols = crop_lazy.collect_schema().names()
-        required_crop = ["crop_path"] + id_cols
+        required_crop = ["crop_path", *TRACK_KEY_COLUMNS]
         missing_crop = [c for c in required_crop if c not in crop_cols]
         if missing_crop:
             logger.warning("Missing columns %s in classified metadata, skipping sort", missing_crop)
@@ -825,7 +825,7 @@ class PipelineRunner(QObject):
             .select(required_crop)
             .filter(pl.all_horizontal(pl.col(c).is_not_null() for c in required_crop))
             .collect()
-            .join(df_final, on=["device_id", "session_id", "track_id"], how="inner")
+            .join(df_final, on=TRACK_KEY_COLUMNS, how="inner")
         )
 
         if len(df_valid) == 0:

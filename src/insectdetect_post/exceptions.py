@@ -6,8 +6,10 @@ Author:   Maximilian Sittinger (https://github.com/maxsitt)
 Docs:     https://maxsitt.github.io/insect-detect-docs/
 
 Classes:
-    PipelineCancelled: Raised when the user requests cancellation of a pipeline or inspection run.
-    UpdateError:       Raised when an update step fails and needs manual intervention.
+    PipelineCancelled:  Raised when the user requests cancellation of a pipeline or inspection run.
+    UpdateError:        Raised when an update step fails and needs manual intervention.
+    ValidationRunError: Raised when a run directory cannot be used for validation.
+    RunSearchCancelled: Raised when the search for a run to validate was cancelled.
 """
 
 from __future__ import annotations
@@ -19,3 +21,11 @@ class PipelineCancelled(Exception):
 
 class UpdateError(Exception):
     """Raised when an update step fails and needs manual intervention."""
+
+
+class ValidationRunError(Exception):
+    """Raised when a run directory cannot be used for validation."""
+
+
+class RunSearchCancelled(Exception):
+    """Raised when the search for a run to validate was cancelled."""

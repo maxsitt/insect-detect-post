@@ -1,14 +1,18 @@
-"""Helper functions for GUI widgets and their config values.
+"""Helper functions for GUI modules.
 
 Source:   https://github.com/maxsitt/insect-detect-post
 License:  GNU AGPLv3 (https://choosealicense.com/licenses/agpl-3.0/)
 Author:   Maximilian Sittinger (https://github.com/maxsitt)
 Docs:     https://maxsitt.github.io/insect-detect-docs/
 
-Provides styled widget and parameter form factories, conversion between nested
-config dicts and flat ParameterForm values, and source/output path validation.
+Provides the logging setup and theme persistence shared by the processing and
+validation GUIs, styled widget and parameter form factories, conversion between
+nested config dicts and flat ParameterForm values, and source/output path validation.
 
 Functions:
+    configure_logging(): Configure logging for a GUI entry point.
+    load_theme(): Return the stored theme name.
+    save_theme(): Store the selected theme name.
     create_groupbox(): Create a styled QGroupBox for a config ParameterForm.
     create_param_form(): Create a child parameter form and add it to the parent form.
     create_num_param(): Create a numeric parameter with slider.
@@ -19,11 +23,51 @@ Functions:
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Literal
 
+import qt_themes
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QGroupBox, QVBoxLayout
 from qt_parameters import CollapsibleBox, FloatParameter, IntParameter, ParameterForm
+
+from insectdetect_post.constants import SETTINGS_APP, SETTINGS_ORG, THEME_DEFAULT
+
+# Create module-level logger
+logger = logging.getLogger(__name__)
+
+# QSettings key of the theme (shared by the processing and the validation window)
+_SETTINGS_KEY_THEME = "theme"
+
+
+def configure_logging() -> None:
+    """Configure logging for a GUI entry point: package at DEBUG, everything else at INFO."""
+    # Replace the handler 'pygbif' installs on import with 'force=True'
+    logging.basicConfig(format="%(levelname)s:%(message)s", level=logging.INFO, force=True)
+    logging.getLogger("insectdetect_post").setLevel(logging.DEBUG)
+
+
+def load_theme() -> str:
+    """Return the stored theme name, or the default if unavailable.
+
+    Returns:
+        Name of a theme that exists in qt_themes.
+    """
+    theme_name = str(QSettings(SETTINGS_ORG, SETTINGS_APP).value(_SETTINGS_KEY_THEME, THEME_DEFAULT))
+    if theme_name not in qt_themes.get_themes():
+        logger.warning("Theme '%s' not available, using '%s'", theme_name, THEME_DEFAULT)
+        return THEME_DEFAULT
+    return theme_name
+
+
+def save_theme(theme_name: str) -> None:
+    """Store the selected theme name.
+
+    Args:
+        theme_name: Name of the selected theme.
+    """
+    QSettings(SETTINGS_ORG, SETTINGS_APP).setValue(_SETTINGS_KEY_THEME, theme_name)
 
 
 def create_groupbox(title: str, color: str, form: ParameterForm) -> QGroupBox:

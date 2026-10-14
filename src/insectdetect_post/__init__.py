@@ -6,5 +6,5 @@ Author:   Maximilian Sittinger (https://github.com/maxsitt)
 Docs:     https://maxsitt.github.io/insect-detect-docs/
 
 This package provides post-processing tools for Insect Detect camera trap data,
-including image processing, classification, and metadata filtering.
+including image processing, classification, metadata filtering, and validation.
 """

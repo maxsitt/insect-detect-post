@@ -55,6 +55,10 @@ class OutputLayout:
     def overlays_dir(self) -> Path:
         return self.root / "images" / "overlays"
 
+    @property
+    def validation_dir(self) -> Path:
+        return self.root / "validation"
+
     def crop_label_dir(self, label: str) -> Path:
         return self.crops_dir / str(label)
 
@@ -62,6 +66,12 @@ class OutputLayout:
         """POSIX-style path relative to the output root."""
         return path.relative_to(self.root).as_posix()
 
+
+# Columns identifying one track across all metadata CSVs (used for e.g. group by, join and sort)
+TRACK_KEY_COLUMNS = ["device_id", "session_id", "track_id"]
+
+# Metadata column of the per-session camera setting (e.g. platform type or flower species)
+SETTING_COLUMN = "setting"
 
 # Taxonomic rank hierarchy, broadest to most specific, used to compare rank specificity
 RANK_ORDER = ["kingdom", "phylum", "class", "order", "family", "genus", "species"]
@@ -101,14 +111,45 @@ def get_bioclip_country_options() -> tuple[str, ...]:
 # Default thread-pool size for image processing operations (e.g. crop/overlay)
 MAX_WORKERS: int = min((os.cpu_count() or 4) + 4, 32)
 
+# Validation: defaults for stratified subsampling
+VALIDATION_PROB_BIN_EDGES_DEFAULT = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
+VALIDATION_MIN_PER_STRATUM_DEFAULT = 5
+VALIDATION_MAX_PER_STRATUM_DEFAULT = 50
+VALIDATION_SEED_DEFAULT = 42
+
+# Validation: effort cap (s) per timed interval of a track (a break adds at most this much)
+VALIDATION_EFFORT_IDLE_CAP_S = 300
+
+# Validation: comparable tracks below which the statistics warn of a small sample
+VALIDATION_SMALL_SAMPLE_TRACKS = 30
+
+# Validation: 'same individual' link candidates: maximum gap and overlap (s) between two tracks
+VALIDATION_SAME_INDIVIDUAL_WINDOW_S = 10.0
+VALIDATION_SAME_INDIVIDUAL_OVERLAP_S = 2.0
+
+# Validation: maximum length in characters of the per-track notes (one line)
+VALIDATION_NOTES_MAX_CHARS = 100
+
+# Validation: crop playback intervals (ms) in single-image mode
+VALIDATION_PLAYBACK_INTERVALS_MS = (250, 500, 1000)
+VALIDATION_PLAYBACK_INTERVAL_DEFAULT_MS = 500
+
+# GUI settings: QSettings organization/application names for persisted user preferences
+SETTINGS_ORG = "insect-detect"
+SETTINGS_APP = "insect-detect-post"
+
 # GUI styling: main window minimum size
 WINDOW_MIN_WIDTH = 1200
 WINDOW_MIN_HEIGHT = 800
+
+# GUI styling: default qt-themes theme (used if no theme is persisted)
+THEME_DEFAULT = "github_dark"
 
 # GUI styling: group box accent colors
 COLOR_GROUP_PROCESSING = "#4DD0E1"
 COLOR_GROUP_CLASSIFICATION = "#7986CB"
 COLOR_GROUP_METADATA = "#4DB6AC"
+COLOR_GROUP_VALIDATION = "#9E8CC4"
 
 # GUI styling: control button colors
 COLOR_BTN_SAVE = "#455A8A"
@@ -116,13 +157,28 @@ COLOR_BTN_RUN = "#00796B"
 COLOR_BTN_CANCEL = "#D32F2F"
 COLOR_BTN_RESET = "#546E7A"
 COLOR_BTN_UPDATE = "#FFA000"
+COLOR_BTN_VALIDATE = "#5E548E"
+COLOR_BTN_HELP = "#2E8BA8"
 
-# GUI settings: QSettings organization/application names for persisted user preferences
-SETTINGS_ORG = "insect-detect"
-SETTINGS_APP = "insect-detect-post"
+# GUI styling: colors of the validation verdict types (keys: validation_session.VERDICT_TYPES)
+COLOR_VERDICT = {
+    "agree": "#43A047",
+    "partial": "#7CB342",
+    "corrected": "#FB8C00",
+    "false_positive": "#E53935",
+    # Same color, the flag mark tells them apart
+    "indeterminate": "#8D6E63",
+    "not_assessable": "#8D6E63",
+}
 
-# GUI styling: default qt-themes theme (used if no theme is persisted)
-THEME_DEFAULT = "github_dark"
+# GUI styling: colors of the validation flags (low image quality, multiple / same individual)
+COLOR_FLAG_LOW_QUALITY = "#9575CD"
+COLOR_FLAG_MULTIPLE_INDIVIDUALS = "#26A69A"
+COLOR_FLAG_SAME_INDIVIDUAL = "#4F9DDE"
+
+# GUI styling: validation error text on dark / light themes
+COLOR_ERROR_TEXT_DARK = "#EF9A9A"
+COLOR_ERROR_TEXT_LIGHT = "#B71C1C"
 
 # GUI styling: progress bar stylesheet template (colors filled in from the active theme)
 PROG_BAR_STYLESHEET = """

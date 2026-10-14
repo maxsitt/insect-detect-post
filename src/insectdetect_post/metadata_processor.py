@@ -21,7 +21,7 @@ from typing import Any, Literal
 
 import polars as pl
 
-from insectdetect_post.constants import OutputLayout
+from insectdetect_post.constants import RANK_ORDER, SETTING_COLUMN, TRACK_KEY_COLUMNS, OutputLayout
 from insectdetect_post.dataset_harmonizer import parse_timestamp_column
 
 # Create module-level logger
@@ -71,7 +71,7 @@ def process_metadata_classified(
     df = pl.read_csv(metadata_path)
 
     # Auto-detect classification results format
-    bioclip_rank_labels = ["species", "genus", "family", "order", "class", "phylum", "kingdom"]
+    bioclip_rank_labels = RANK_ORDER[::-1]  # deepest first, the order of the output columns
     active_bioclip_ranks: list[str] = []
     classifier_type: Literal["ultralytics", "bioclip"]
     if "top1" in df.columns and "top1_prob" in df.columns:
@@ -131,9 +131,9 @@ def process_metadata_classified(
         progress_callback(30, 100, "Computing track aggregates...")
 
     # "setting" (deployment background) is constant per session, extract once here
-    has_setting = "setting" in df.columns
+    has_setting = SETTING_COLUMN in df.columns
     session_settings = (
-        df.select(["device_id", "session_id", "setting"])
+        df.select(["device_id", "session_id", SETTING_COLUMN])
         .unique(subset=["device_id", "session_id"], keep="first")
         if has_setting else None
     )
@@ -152,7 +152,7 @@ def process_metadata_classified(
         ]
 
     agg_track = (
-        df.group_by(["device_id", "session_id", "track_id"])
+        df.group_by(TRACK_KEY_COLUMNS)
         .agg(agg_exprs)
         .with_columns([
             (pl.col("end_time") - pl.col("start_time"))
@@ -208,11 +208,11 @@ def process_metadata_classified(
     ]
 
     df_candidates = (
-        df_votes.group_by(["device_id", "session_id", "track_id", "candidate"])
+        df_votes.group_by([*TRACK_KEY_COLUMNS, "candidate"])
         .agg(agg_votes)
         .join(
-            agg_track.select(["device_id", "session_id", "track_id", "track_imgs"]),
-            on=["device_id", "session_id", "track_id"]
+            agg_track.select([*TRACK_KEY_COLUMNS, "track_imgs"]),
+            on=TRACK_KEY_COLUMNS
         )
     )
     if session_settings is not None:
@@ -232,25 +232,25 @@ def process_metadata_classified(
     if classifier_type == "bioclip":
         # Re-attach taxonomic hierarchy columns
         taxonomy_map = (
-            df_votes.select(["device_id", "session_id", "track_id", "candidate"] + bioclip_columns)
-            .unique(subset=["device_id", "session_id", "track_id", "candidate"], keep="first")
+            df_votes.select([*TRACK_KEY_COLUMNS, "candidate", *bioclip_columns])
+            .unique(subset=[*TRACK_KEY_COLUMNS, "candidate"], keep="first")
         )
         df_candidates = df_candidates.join(
             taxonomy_map,
-            on=["device_id", "session_id", "track_id", "candidate"],
+            on=[*TRACK_KEY_COLUMNS, "candidate"],
             how="left"
         )
 
     # Sort candidates per track by weighted and mean probabilities
     df_candidates = df_candidates.sort(
-        by=["device_id", "session_id", "track_id", "candidate_prob_weighted", "candidate_prob_mean"],
-        descending=[False, False, False, True, True]
+        by=[*TRACK_KEY_COLUMNS, "candidate_prob_weighted", "candidate_prob_mean"],
+        descending=[*[False] * len(TRACK_KEY_COLUMNS), True, True]
     )
 
     # Drop negligible candidates, but always keep each track's own best row
     df_candidates = df_candidates.filter(
         (pl.col("candidate_prob_weighted") > 0)
-        | (pl.int_range(pl.len()).over(["device_id", "session_id", "track_id"]) == 0)
+        | (pl.int_range(pl.len()).over(TRACK_KEY_COLUMNS) == 0)
     )
 
     if progress_callback:
@@ -259,9 +259,9 @@ def process_metadata_classified(
     # Get best candidate per track
     df_final = (
         df_candidates
-        .group_by(["device_id", "session_id", "track_id"])
+        .group_by(TRACK_KEY_COLUMNS)
         .first()
-        .join(agg_track, on=["device_id", "session_id", "track_id"])
+        .join(agg_track, on=TRACK_KEY_COLUMNS)
     )
 
     if progress_callback:
@@ -300,12 +300,12 @@ def process_metadata_classified(
         progress_callback(90, 100, "Finalizing results...")
 
     # Sort the final result
-    df_final = df_final.sort(["device_id", "session_id", "track_id"])
+    df_final = df_final.sort(TRACK_KEY_COLUMNS)
 
     # Final column selection
     main_columns = ["device_id", "session_id"]
     if has_setting:
-        main_columns.append("setting")
+        main_columns.append(SETTING_COLUMN)
     main_columns += [
         "track_id", "track_imgs", "candidate_imgs",
         "candidate", "candidate_prob_weighted", "candidate_prob_mean"

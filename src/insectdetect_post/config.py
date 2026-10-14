@@ -36,7 +36,7 @@ from insectdetect_post.constants import (
     get_bioclip_country_options,
 )
 
-# Initialize logger for this module
+# Create module-level logger
 logger = logging.getLogger(__name__)
 
 class _ConfigDumper(yaml.SafeDumper):

@@ -45,6 +45,7 @@ cuda132 = [
 
 [project.scripts]
 gui = "insectdetect_post.post_processing_gui:main"
+validate = "insectdetect_post.validation_gui:main"
 update = "insectdetect_post.update:main"
 
 [project.urls]

@@ -20,6 +20,7 @@ AI-based classification and metadata aggregation into a single configurable pipe
 - [Source structure](#source-structure)
 - [Output structure](#output-structure)
 - [Settings](#settings)
+- [Validation](#validation)
 - [License](#license)
 - [Citation](#citation)
 
@@ -35,6 +36,9 @@ AI-based classification and metadata aggregation into a single configurable pipe
 - **Metadata processing** - aggregate image-level predictions into per-track results
   with weighted probabilities. Filter tracks by detection confidence, duration, and
   prediction probability.
+- **Validation** - check the track-level predictions manually in a dedicated window,
+  on all tracks or a stratified subsample, and get a corrected dataset plus the model's
+  error rates (including accuracy per rank, precision per taxon).
 - **Config profiles** - save, switch between and reuse multiple named configuration
   files (`.yaml`) for different processing setups.
 - **Desktop GUI** - configure and run the pipeline with a PySide6-based interface
@@ -187,7 +191,7 @@ species filters) are downloaded automatically on first use from the release asse
 Configuration files are stored as `.yaml` files in the `configs/` directory. The
 active profile is tracked in `config_selector.yaml` and can be switched, created
 or updated from the GUI, so different processing setups (e.g. per project or per
-classifier) can be saved and reused without editing YAML by hand.
+classifier) can be saved and reused without editing YAML manually.
 
 The default config file (`config.yaml`) and the config selector file are created
 automatically on first launch. Both are ignored by git, together with all profiles
@@ -282,14 +286,18 @@ Each run creates a timestamped directory under `data_processed/` in your output 
         │   ├── <source>_metadata_merged.csv               # all source metadata, harmonized
         │   ├── <source>_metadata_merged_classified.csv    # + per-image predictions
         │   ├── ..._classified_candidates.csv              # per-track candidate predictions
-        │   └── ..._classified_final.csv                   # one row per track (best prediction)
+        │   ├── ..._classified_final.csv                   # one row per track (best prediction)
+        │   └── ..._classified_final_validated_<validator>_<started>.csv  # final + validation
+        ├── validation/                                    # validation sessions + statistics
         └── images/
             ├── crops/      # cropped detections, optionally sorted into prediction subdirectories
             └── overlays/   # copies of full frames with bounding boxes + metadata drawn on
 ```
 
-`..._classified_final.csv` is the file to use for analysis - one row per tracking ID with
-its final prediction, weighted probability, duration and (optionally) estimated size.
+`..._classified_final.csv` is the file to use for analysis of the raw model predictions,
+`..._classified_final_validated_<validator>_<started>.csv` for analyzing the corrected data
+after validation. Both have one row per tracking ID including its final prediction and
+weighted probability, the validated file adds the verdicts and determinations.
 
 ---
 
@@ -361,6 +369,70 @@ Metadata processing settings applied to the final results.
 | `metadata.estimate_size.enabled`                | `bool`          | `false` | Estimate physical size based on bounding box dimensions and frame size (millimeters). |
 | `metadata.estimate_size.frame_width_mm`         | `int` (10-1000) | `230`   | Physical width of the camera frame (millimeters).                                     |
 | `metadata.estimate_size.frame_height_mm`        | `int` (10-1000) | `130`   | Physical height of the camera frame (millimeters).                                    |
+
+---
+
+## Validation
+
+Check the model predictions of a processed run manually, one **track** at a time.
+A validation gives you:
+
+- a **corrected dataset** - your determinations next to the model predictions of the validated tracks
+- the **error rates** of the model - accuracy per rank, precision per predicted taxon and accuracy per
+  probability range, e.g. to report them or to choose an informed `min_prob_weighted` threshold
+
+Open the validation window with `Validate Results` in the main window (also offered when a run has
+finished), or start it on its own:
+
+``` bash
+uv run --no-sync validate
+```
+
+Only runs classified with BioCLIP 2 can be validated. Press `F1` in the window for the validation
+guidelines and all keyboard shortcuts.
+
+### Workflow
+
+1. **Start a session** - select a processed run (`data_processed/<timestamp>_<source>_processed`) and
+   enter your name as validator. Optional:
+   - **Blind determination** - the model prediction stays hidden until you have entered your own.
+   - **Track selection** - only tracks of selected predicted taxa or camera settings.
+   - **Stratified subsample** - a random sample of up to *n* tracks per stratum (predicted taxon,
+     probability range, camera setting) instead of every track: representative error rates for a
+     fraction of the work.
+2. **Validate the tracks** - confirm the prediction (fully or down to a rank), correct it, or mark the
+   track as not an arthropod (false positive) or not determinable. Qualifiers (uncertain, aggregate)
+   and flags (same individual, multiple individuals, low image quality) record additional information.
+   Select several tracks to handle them at once with batch verdicts/determinations.
+3. **Review the results** - view/export the statistics and export the merged results (see below).
+
+Your **verdict** follows from what you enter: *agree*, *partial* (confirmed, but not down to the rank the
+run was classified to), *corrected*, *not an arthropod* or *not determinable*. Every change is saved
+automatically, so you can close the window at any time and resume the session later.
+
+### Results
+
+- **`Statistics`** - verdicts, accuracy per rank and per probability range, precision per predicted taxon
+  (each with 95 % confidence intervals), the most frequent confusions and the agreement with other
+  sessions of the run. Tracks with low image quality or different taxa are left out of the accuracies by
+  default. For a stratified subsample, report the `_weighted` columns: they estimate the results for all
+  tracks of the sampled strata, not only the sample. `Export statistics (CSV)` saves every table.
+- **`Export merged results`** - writes `..._classified_final_validated_<validator>_<started>.csv` next to
+  the final CSV: every track of the run with your verdict and determination, plus `combined_<rank>` -
+  your taxon for validated tracks, none for false positives, the model's for all other tracks
+  (`combined_source` tells which). Tracks linked as the same individual share an `individual_id`.
+  Use this file instead of `..._classified_final.csv` for analysis after a validation.
+
+Every session is identified by its validator and its start time (`<started>` = `YYYY-MM-DD_HH-MM-SS`):
+
+``` text
+<run>/validation/
+├── <validator>_<started>_validation.csv    # one row per sampled track: verdict and determination
+├── <validator>_<started>_validation.json   # sampling settings, provenance and UI state
+├── <validator>_<started>_validation.log    # application log while the session is open
+├── <validator>_<started>_history.jsonl     # every verdict change (audit trail)
+└── stats_<validator>_<started>/            # exported statistics tables and summary.json
+```
 
 ---
 

@@ -25,6 +25,7 @@ from pathlib import Path
 
 import polars as pl
 
+from insectdetect_post.constants import SETTING_COLUMN
 from insectdetect_post.dataset_harmonizer import (
     CANONICAL_TIMESTAMP_FORMAT,
     FILENAME_TIMESTAMP_FORMAT,
@@ -562,7 +563,7 @@ class DatasetContext:
                         if config_path is not None:
                             setting = _load_deployment_setting(config_path)
                             if setting is not None:
-                                df = df.with_columns(pl.lit(setting).alias("setting"))
+                                df = df.with_columns(pl.lit(setting).alias(SETTING_COLUMN))
 
                         if len(df) > 0:
                             df_list.append(df)
@@ -576,11 +577,11 @@ class DatasetContext:
                 if df_list:
                     # diagonal_relaxed: files may have different columns or mismatched dtypes
                     df_concat = pl.concat(df_list, how="diagonal_relaxed", rechunk=True)
-                    if "setting" in df_concat.columns:
-                        # Move "setting" column to immediately after "session_id" if present
-                        cols = [c for c in df_concat.columns if c != "setting"]
+                    if SETTING_COLUMN in df_concat.columns:
+                        # Move the setting column to immediately after "session_id" if present
+                        cols = [c for c in df_concat.columns if c != SETTING_COLUMN]
                         idx = cols.index("session_id") + 1 if "session_id" in cols else 0
-                        df_concat = df_concat.select(cols[:idx] + ["setting"] + cols[idx:])
+                        df_concat = df_concat.select([*cols[:idx], SETTING_COLUMN, *cols[idx:]])
                     sort_cols = [c for c in ["device_id", "session_id", "timestamp", "track_id"]
                                  if c in df_concat.columns]
                     self._metadata_df = df_concat.sort(sort_cols) if sort_cols else df_concat

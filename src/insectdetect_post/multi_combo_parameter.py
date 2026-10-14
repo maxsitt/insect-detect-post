@@ -162,6 +162,9 @@ class MultiComboParameter(ParameterWidget):
         else:
             pairs = tuple(i if isinstance(i, tuple) else (i, i) for i in items)
 
+        if pairs == self._items:
+            # Unchanged: a rebuild would delete the entry a click is still processing
+            return
         self._items = pairs
         self._refresh_items()
         # Re-applied so a value that is no longer selectable is dropped rather than kept
