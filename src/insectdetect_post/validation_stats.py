@@ -3,6 +3,7 @@
 Source:   https://github.com/maxsitt/insect-detect-post
 License:  GNU AGPLv3 (https://choosealicense.com/licenses/agpl-3.0/)
 Author:   Maximilian Sittinger (https://github.com/maxsitt)
+AI use:   Developed with AI coding assistance, reviewed by the author
 Docs:     https://maxsitt.github.io/insect-detect-docs/
 
 All functions take the session table ('ValidationSession.to_frame()') and use validated tracks

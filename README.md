@@ -21,6 +21,7 @@ AI-based classification and metadata aggregation into a single configurable pipe
 - [Output structure](#output-structure)
 - [Settings](#settings)
 - [Validation](#validation)
+- [AI use](#ai-use)
 - [License](#license)
 - [Citation](#citation)
 
@@ -469,6 +470,13 @@ Every session is identified by its validator and its start time (`<started>` = `
 ├── <validator>_<started>_history.jsonl     # every verdict change (audit trail)
 └── stats_<validator>_<started>/            # exported statistics tables and summary.json
 ```
+
+---
+
+## AI use
+
+Parts of this code are developed with AI coding assistance.
+All code is reviewed and tested extensively by the author.
 
 ---
 
