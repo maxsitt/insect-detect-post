@@ -1,9 +1,14 @@
 {
   "assets": [
     {
-      "name": "tol_gbif_taxon_keys_Arthropoda",
-      "url": "https://github.com/maxsitt/insect-detect-post/releases/download/v1.0.0/tol_gbif_taxon_keys_Arthropoda.csv",
-      "sha256": "3dee7ce6b6f8e7db0a9468133c81f8631a42224cecf87ab712eee9beaf809e40"
+      "name": "bioclip_gbif_species_mapping_Arthropoda",
+      "url": "https://github.com/maxsitt/insect-detect-post/releases/download/v1.1.0/bioclip_gbif_species_mapping_Arthropoda.csv",
+      "sha256": "e09a04c9dbc61cc914ee12fbe03b666c67123d0fcdd59573eabc9bf5335dbe12"
+    },
+    {
+      "name": "bioclip_gbif_species_mapping_Arthropoda_provenance",
+      "url": "https://github.com/maxsitt/insect-detect-post/releases/download/v1.1.0/bioclip_gbif_species_mapping_Arthropoda.json",
+      "sha256": "5a130f0622138184dc93264e1a91cf03fb9f398c0c568f6d35f248e972166771"
     }
   ]
 }
