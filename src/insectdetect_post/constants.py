@@ -76,14 +76,18 @@ SETTING_COLUMN = "setting"
 # Taxonomic rank hierarchy, broadest to most specific, used to compare rank specificity
 RANK_ORDER = ["kingdom", "phylum", "class", "order", "family", "genus", "species"]
 
-# Phylum filter for GBIF taxon resolution, used by filters/resolve_tol_gbif_species.py and
+# Phylum filter for GBIF taxon resolution, used by filters/build_bioclip_gbif_species_mapping.py and
 # build_region_filter.py. Set to 'None' to resolve/query the full Tree of Life species list
 PHYLUM_FILTER: str | None = "Arthropoda"
 
-# GBIF backbone taxonKeys for known PHYLUM_FILTER values, used by build_region_filter.py
-# to restrict occurrence facet queries server-side for efficiency
-PHYLUM_TAXON_KEYS: dict[str, int] = {
-    "Arthropoda": 54,
+# GBIF checklist that taxon names are matched against and occurrences are interpreted with:
+# Catalogue of Life Extended Release (COL XR), the GBIF default since replacing the GBIF Backbone
+GBIF_CHECKLIST_KEY: str = "7ddf754f-d193-4cc9-b351-99906754a03b"
+
+# COL XR taxon keys (alphanumeric strings) for known PHYLUM_FILTER values, used by
+# build_region_filter.py to restrict occurrence facet queries server-side for efficiency
+PHYLUM_TAXON_KEYS: dict[str, str] = {
+    "Arthropoda": "RT",
 }
 
 # Minimum GBIF occurrence records required for a taxon to be included in a region filter

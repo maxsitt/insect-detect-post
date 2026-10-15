@@ -1,5 +1,10 @@
 # Insect Detect Post project-specific
 configs/*.yaml
+filters/region_filter_*.csv
+filters/region_filter_*.json
+filters/bioclip_gbif_species_mapping_*.csv
+filters/bioclip_gbif_species_mapping_*.json
+# Old filter file names
 filters/tol_gbif_species_*.csv
 filters/tol_gbif_species_*.json
 filters/tol_gbif_taxon_keys_*.csv

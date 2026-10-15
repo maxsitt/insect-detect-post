@@ -5,9 +5,9 @@ License:  GNU AGPLv3 (https://choosealicense.com/licenses/agpl-3.0/)
 Author:   Maximilian Sittinger (https://github.com/maxsitt)
 Docs:     https://maxsitt.github.io/insect-detect-docs/
 
-Built from 'filters/tol_gbif_taxon_keys_Arthropoda.csv': species with a GBIF taxon key, named by
-their GBIF canonical name, higher ranks from the Tree of Life. Taxa predicted in the run and
-free-text entries are added on top.
+Built from 'filters/bioclip_gbif_species_mapping_Arthropoda.csv': species with a GBIF species key,
+named by their GBIF species name (the canonical name), higher ranks from the Tree of Life.
+Taxa predicted in the run and free-text entries are added on top.
 
 Functions:
     file_provenance(): Name, size and SHA-256 checksum of a file.
@@ -30,7 +30,7 @@ from typing import Any
 import polars as pl
 
 from insectdetect_post.asset_manager import compute_sha256, ensure_asset
-from insectdetect_post.build_region_filter import TOL_GBIF_TAXON_KEYS_CSV, load_tol_gbif_taxon_keys
+from insectdetect_post.build_region_filter import SPECIES_MAPPING_CSV, load_species_mapping
 from insectdetect_post.constants import FILTER_ASSETS_JSON, RANK_ORDER
 
 # Create module-level logger
@@ -133,49 +133,50 @@ class TaxonomyIndex:
         return self._df.is_empty()
 
     @property
-    def from_tol_list(self) -> bool:
-        """Whether the index was built from the TOL-to-GBIF taxon key mapping file."""
-        return self.provenance.get("source") == "tol_gbif"
+    def uses_species_mapping(self) -> bool:
+        """Whether the index was built from the BioCLIP-to-GBIF species mapping file."""
+        return self.provenance.get("source") == "species_mapping"
 
     @staticmethod
-    def tol_file_available() -> bool:
-        """Return whether the TOL-to-GBIF taxon key mapping file is present."""
-        return TOL_GBIF_TAXON_KEYS_CSV.exists()
+    def mapping_file_available() -> bool:
+        """Return whether the BioCLIP-to-GBIF species mapping file is present."""
+        return SPECIES_MAPPING_CSV.exists()
 
     @staticmethod
-    def ensure_tol_file(progress_callback: Callable[[int, int, str], None] | None = None) -> None:
-        """Download the TOL-to-GBIF taxon key mapping file if it is missing or outdated.
+    def ensure_mapping_file(progress_callback: Callable[[int, int, str], None] | None = None) -> None:
+        """Download the BioCLIP-to-GBIF species mapping file if it is missing or outdated.
 
         Args:
             progress_callback: Optional callback(current, total, message) for the download.
         """
-        ensure_asset(TOL_GBIF_TAXON_KEYS_CSV.name, FILTER_ASSETS_JSON, progress_callback=progress_callback)
+        ensure_asset(SPECIES_MAPPING_CSV.name, FILTER_ASSETS_JSON, progress_callback=progress_callback)
 
     @classmethod
-    def from_tol_gbif(cls) -> TaxonomyIndex:
-        """Build the index from the TOL-to-GBIF taxon key mapping file (downloaded if missing).
+    def from_species_mapping(cls) -> TaxonomyIndex:
+        """Build the index from the BioCLIP-to-GBIF species mapping file (downloaded if missing).
 
         Returns:
             Index of the GBIF-matched species, with 'tol_to_canonical' filled (differing names only).
         """
-        mapping = load_tol_gbif_taxon_keys()
-        matched = mapping.filter(pl.col("gbif_taxon_key").is_not_null() & pl.col("gbif_canonical_name").is_not_null())
+        mapping = load_species_mapping()
+        matched = mapping.filter(pl.col("gbif_species_key").is_not_null() & pl.col("gbif_species").is_not_null())
         lineages = (
             matched.select(
-                pl.col("class"), pl.col("order"), pl.col("family"), pl.col("genus"),
-                pl.col("gbif_canonical_name").alias("species"),
+                pl.col("bioclip_class").alias("class"), pl.col("bioclip_order").alias("order"),
+                pl.col("bioclip_family").alias("family"), pl.col("bioclip_genus").alias("genus"),
+                pl.col("gbif_species").alias("species"),
             )
             .unique(subset=["species"], keep="first", maintain_order=True)
             .with_columns(pl.lit("taxonomy_list").alias("source"))
         )
         index = cls(lineages)
         # Only the names that differ, every other name is its own canonical name
-        renamed = matched.filter(pl.col("species") != pl.col("gbif_canonical_name"))
+        renamed = matched.filter(pl.col("bioclip_species") != pl.col("gbif_species"))
         index.tol_to_canonical = dict(
-            zip(renamed["species"].to_list(), renamed["gbif_canonical_name"].to_list(), strict=True)
+            zip(renamed["bioclip_species"].to_list(), renamed["gbif_species"].to_list(), strict=True)
         )
-        index.provenance = file_provenance(TOL_GBIF_TAXON_KEYS_CSV) | {
-            "source": "tol_gbif",
+        index.provenance = file_provenance(SPECIES_MAPPING_CSV) | {
+            "source": "species_mapping",
             "n_species_tol": mapping.height,
             "n_species_matched": index.n_species,
         }

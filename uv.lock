@@ -691,7 +691,7 @@ requires-dist = [
     { name = "psutil", specifier = ">=7.2.2,<8" },
     { name = "pybioclip", specifier = ">=2.1.6,<3" },
     { name = "pydantic", specifier = ">=2.13.5,<3" },
-    { name = "pygbif", specifier = ">=0.6.6,<0.7" },
+    { name = "pygbif", specifier = ">=0.7.0,<0.8" },
     { name = "pyside6", specifier = ">=6.11.2,<7" },
     { name = "pyyaml", specifier = ">=6.0.3,<7" },
     { name = "qt-logging", specifier = ">=0.1.1,<1" },
@@ -2048,7 +2048,7 @@ wheels = [
 
 [[package]]
 name = "pygbif"
-version = "0.6.6"
+version = "0.7.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "appdirs" },
@@ -2058,9 +2058,9 @@ dependencies = [
     { name = "requests" },
     { name = "requests-cache" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/11/ff/41bcdaef9ebbabb7d5a1862ac5fd3cf646fe2dc5c73731613e3a9a7cdeb6/pygbif-0.6.6.tar.gz", hash = "sha256:9b46a249314c7bc575a511428700108404e0459bd08b9789d4eb793ed90bd276", size = 64636, upload-time = "2025-11-14T13:44:03.659Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0f/83/78979d012c439337e1e5f89b535297b6a97e5123ca45161d3887fb47de9a/pygbif-0.7.0.tar.gz", hash = "sha256:f287fab6a70d5e2f26ce0dc7ad6e3d47113c4c86d40d0b8f631596283d8bbf35", size = 85050, upload-time = "2026-10-07T08:11:17.053Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/07/d7/19a39b911bd59576b35d9c61564a4ce6c1af1966bced6422a8c656e4cf09/pygbif-0.6.6-py3-none-any.whl", hash = "sha256:0e46ad6daba9b4f87d49616e2b8934ed2c8ab6fe21aa75c4bc83298819cf9875", size = 78377, upload-time = "2025-11-14T13:44:02.336Z" },
+    { url = "https://files.pythonhosted.org/packages/6b/07/1fab26ca16ee996133c1d1cbc551f9fb8239c733cd98151768f2c3236b29/pygbif-0.7.0-py3-none-any.whl", hash = "sha256:aef540ea80943bbc6eb03c554047d477d9022d18d47fadb1d0d5ab254a7f9614", size = 101385, upload-time = "2026-10-07T08:11:15.881Z" },
 ]
 
 [[package]]

@@ -569,13 +569,13 @@ class RunLoadWorker(QObject):
             run = ValidationRun.open(self._run_root, should_stop=lambda: self._cancelled)
             taxonomy: TaxonomyIndex | None = None
             if self._load_taxonomy:
-                if TaxonomyIndex.tol_file_available() or self._allow_download:
-                    TaxonomyIndex.ensure_tol_file(
+                if TaxonomyIndex.mapping_file_available() or self._allow_download:
+                    TaxonomyIndex.ensure_mapping_file(
                         lambda current, total, message: self.download_progress.emit(
                             int(100 * current / max(total, 1)), message)
                     )
                     self.status.emit("Loading taxonomy list...")
-                    taxonomy = TaxonomyIndex.from_tol_gbif()
+                    taxonomy = TaxonomyIndex.from_species_mapping()
                 else:
                     taxonomy = TaxonomyIndex()
             self.finished.emit((run, taxonomy))
@@ -1034,7 +1034,7 @@ class SetupPage(QWidget):
             filter_text,
             f"Camera settings: {self._settings_text() or 'none recorded'}",
         ]))
-        if self.taxonomy.from_tol_list:
+        if self.taxonomy.uses_species_mapping:
             self.taxonomy_label.setText(
                 f"Taxonomy list: BioCLIP Tree of Life matched against GBIF, {self.taxonomy.n_species:,} species "
                 "(dropdowns + type-ahead, free text allowed)."

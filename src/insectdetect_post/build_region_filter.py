@@ -6,21 +6,27 @@ Author:   Maximilian Sittinger (https://github.com/maxsitt)
 Docs:     https://maxsitt.github.io/insect-detect-docs/
 
 Resolves which BioCLIP Tree of Life species have GBIF occurrence records in a given
-region, by combining a TOL-to-GBIF taxon key mapping with GBIF's occurrence search
+region, by combining a BioCLIP-to-GBIF species mapping with GBIF's occurrence search
 API. A region is either a country (ISO 3166-1 alpha-2 code) or a GBIF continent, which
 GBIF assigns differently: a country is the one the publisher supplied (or derived from
 coordinates), coastal waters included, while a continent covers land only and is left
 blank for marine records and for records without coordinates from a country spanning two
 continents (boundaries: https://github.com/gbif/continents).
 
+Taxon keys are those of GBIF_CHECKLIST_KEY (Catalogue of Life Extended Release, COL XR):
+alphanumeric strings, some of them digits only, so they are never converted to integers.
+
 Results are cached per region so repeat runs need no network access, alongside a JSON
 provenance record so a cache built from an outdated mapping is rebuilt automatically.
 
 Functions:
-    load_tol_gbif_taxon_keys(): Load the TOL-to-GBIF taxon key mapping, downloading it on first use.
-    get_region_taxon_counts():  Fetch all GBIF taxon keys with occurrence records in a region.
-    build_region_filter_csv():  Resolve a species-list CSV for a region from cache or by querying GBIF.
-    load_region_species():      Load species with GBIF occurrence records in any of the given regions.
+    load_species_mapping():            Load the BioCLIP-to-GBIF species mapping, downloading it on first use.
+    load_species_mapping_provenance(): Load the provenance record of the species mapping.
+    fetch_col_release():               Fetch the COL release GBIF currently matches names against.
+    format_col_release():              Return a short label of a COL release record for log messages.
+    get_region_species_counts():       Fetch all GBIF species keys with occurrence records in a region.
+    build_region_filter_csv():         Resolve a species-list CSV for a region from cache or by querying GBIF.
+    load_region_species():             Load species with GBIF occurrence records in any of the given regions.
 """
 
 from __future__ import annotations
@@ -35,6 +41,7 @@ from pathlib import Path
 from typing import Literal
 
 import polars as pl
+import requests
 from pygbif import occurrences
 from requests.exceptions import HTTPError, RequestException
 
@@ -42,6 +49,7 @@ from insectdetect_post.asset_manager import compute_sha256, ensure_asset
 from insectdetect_post.constants import (
     FILTER_ASSETS_JSON,
     FILTERS_PATH,
+    GBIF_CHECKLIST_KEY,
     MIN_OCCURRENCE_COUNT,
     PHYLUM_FILTER,
     PHYLUM_TAXON_KEYS,
@@ -50,12 +58,13 @@ from insectdetect_post.constants import (
 # Create module-level logger
 logger = logging.getLogger(__name__)
 
-# TOL-to-GBIF taxon key mapping, produced by filters/resolve_tol_gbif_species.py
+# BioCLIP-to-GBIF species mapping and provenance record, produced by filters/build_bioclip_gbif_species_mapping.py
 _scope = PHYLUM_FILTER if PHYLUM_FILTER is not None else "all"
-TOL_GBIF_TAXON_KEYS_CSV = FILTERS_PATH / f"tol_gbif_taxon_keys_{_scope}.csv"
+SPECIES_MAPPING_CSV = FILTERS_PATH / f"bioclip_gbif_species_mapping_{_scope}.csv"
+SPECIES_MAPPING_JSON = SPECIES_MAPPING_CSV.with_suffix(".json")
 
-# GBIF backbone taxonKey to restrict occurrence facet queries to
-PHYLUM_TAXON_KEY: int | None = None
+# COL XR taxon key to restrict occurrence facet queries to
+PHYLUM_TAXON_KEY: str | None = None
 if PHYLUM_FILTER is not None:
     PHYLUM_TAXON_KEY = PHYLUM_TAXON_KEYS.get(PHYLUM_FILTER)
     if PHYLUM_TAXON_KEY is None:
@@ -76,11 +85,20 @@ MAX_BACKOFF_S = 20.0
 # Age at which a cached region filter is reported as outdated
 CACHE_MAX_AGE_DAYS = 90
 
+# Endpoints naming the COL release behind GBIF_CHECKLIST_KEY: GBIF's name matching service
+# reports the ChecklistBank dataset it currently uses, ChecklistBank its issue date and DOI
+GBIF_MATCH_METADATA_URL = "https://api.gbif.org/v2/species/match/metadata"
+CHECKLISTBANK_DATASET_URL = "https://api.checklistbank.org/dataset/{}"
+RELEASE_TIMEOUT_S = 15
 
-def load_tol_gbif_taxon_keys(
+# Request headers for direct GBIF/ChecklistBank API calls (not made through pygbif)
+REQUEST_HEADERS = {"User-Agent": "insect-detect-post (https://github.com/maxsitt/insect-detect-post)"}
+
+
+def load_species_mapping(
     progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> pl.DataFrame:
-    """Load the TOL-to-GBIF taxon key mapping, downloading it on first use.
+    """Load the BioCLIP-to-GBIF species mapping, downloading it on first use.
 
     Args:
         progress_callback: Optional callback(current, total, message) for download progress.
@@ -91,17 +109,76 @@ def load_tol_gbif_taxon_keys(
 
     Returns:
         DataFrame with every column of the mapping CSV (COLUMN_ORDER in
-        filters/resolve_tol_gbif_species.py), 'gbif_taxon_key' as a nullable Int64.
+        filters/build_bioclip_gbif_species_mapping.py), 'gbif_species_key' as a nullable String.
     """
-    ensure_asset(TOL_GBIF_TAXON_KEYS_CSV.name, FILTER_ASSETS_JSON, progress_callback=progress_callback)
-    return pl.read_csv(TOL_GBIF_TAXON_KEYS_CSV, schema_overrides={"gbif_taxon_key": pl.Int64})
+    ensure_asset(SPECIES_MAPPING_CSV.name, FILTER_ASSETS_JSON, progress_callback=progress_callback)
+    return pl.read_csv(SPECIES_MAPPING_CSV, schema_overrides={"gbif_species_key": pl.String})
+
+
+def load_species_mapping_provenance() -> dict:
+    """Load the provenance record of the species mapping, downloading it on first use.
+
+    Raises:
+        KeyError: If the provenance JSON is not a registered asset.
+        ValueError: If the downloaded file fails checksum verification or is not valid JSON.
+
+    Returns:
+        Provenance dict as written by filters/build_bioclip_gbif_species_mapping.py, including
+        'col_release' (see fetch_col_release()).
+    """
+    ensure_asset(SPECIES_MAPPING_JSON.name, FILTER_ASSETS_JSON)
+    return json.loads(SPECIES_MAPPING_JSON.read_text(encoding="utf-8"))
+
+
+def fetch_col_release(timeout: float = RELEASE_TIMEOUT_S) -> dict[str, str | None]:
+    """Fetch the COL release GBIF currently matches names against.
+
+    GBIF moves GBIF_CHECKLIST_KEY to each new COL XR release, so the key alone does not
+    identify which release produced a taxon key. Single attempt, no retries.
+
+    Raises:
+        RequestException: If either API request fails.
+        KeyError: If GBIF's response does not name the ChecklistBank dataset.
+
+    Returns:
+        Dict with keys: checklist_key, clb_dataset_key, alias (e.g. 'COL26.6 XR'),
+        issued (ISO date), doi.
+    """
+    response = requests.get(
+        GBIF_MATCH_METADATA_URL, params={"checklistKey": GBIF_CHECKLIST_KEY},
+        headers=REQUEST_HEADERS, timeout=timeout
+    )
+    response.raise_for_status()
+    main_index = response.json()["mainIndex"]
+    clb_dataset_key = str(main_index["clbDatasetKey"])
+
+    response = requests.get(
+        CHECKLISTBANK_DATASET_URL.format(clb_dataset_key), headers=REQUEST_HEADERS, timeout=timeout
+    )
+    response.raise_for_status()
+    dataset = response.json()
+    return {
+        "checklist_key": GBIF_CHECKLIST_KEY,
+        "clb_dataset_key": clb_dataset_key,
+        "alias": main_index.get("datasetAlias") or dataset.get("alias"),
+        "issued": dataset.get("issued"),
+        "doi": dataset.get("doi"),
+    }
+
+
+def format_col_release(release: dict | None) -> str:
+    """Return a short label of a COL release record for log messages, e.g. 'COL26.6 XR (2026-06-19)'."""
+    if not release:
+        return "unknown"
+    alias = release.get("alias") or f"ChecklistBank dataset {release.get('clb_dataset_key', '?')}"
+    return f"{alias} ({release['issued']})" if release.get("issued") else alias
 
 
 def _cache_stale_reason(meta_path: Path) -> str | None:
     """Return why a cached region filter should be rebuilt, or None if it is still valid.
 
     The cache is keyed by region and min_occurrence_count through its filename, so the
-    remaining input that can change underneath it is the TOL-to-GBIF mapping. A cache
+    remaining input that can change underneath it is the species mapping. A cache
     written before provenance was recorded has no way to prove which mapping produced it
     and is therefore treated as stale once.
     """
@@ -113,12 +190,12 @@ def _cache_stale_reason(meta_path: Path) -> str | None:
     except (OSError, ValueError):
         return f"its provenance record '{meta_path.name}' could not be read"
 
-    if not TOL_GBIF_TAXON_KEYS_CSV.exists():
-        logger.debug("TOL-to-GBIF mapping is not present locally, keeping the cached region filter.")
+    if not SPECIES_MAPPING_CSV.exists():
+        logger.debug("Species mapping is not present locally, keeping the cached region filter.")
         return None
 
-    if meta.get("mapping_sha256") != compute_sha256(TOL_GBIF_TAXON_KEYS_CSV):
-        return "the TOL-to-GBIF mapping has changed since it was built"
+    if meta.get("mapping_sha256") != compute_sha256(SPECIES_MAPPING_CSV):
+        return "the species mapping has changed since it was built"
 
     built = meta.get("built_utc")
     if isinstance(built, str):
@@ -141,6 +218,8 @@ def _write_cache_metadata(
     region: str,
     min_occurrence_count: int,
     mapping_sha256: str,
+    mapping_col_release: dict | None,
+    gbif_col_release: dict | None,
     facet_entries: int,
     species: int
 ) -> None:
@@ -151,7 +230,10 @@ def _write_cache_metadata(
             "region": region,
             "phylum_filter": _scope,
             "min_occurrence_count": min_occurrence_count,
+            "gbif_checklist_key": GBIF_CHECKLIST_KEY,
             "mapping_sha256": mapping_sha256,
+            "mapping_col_release": mapping_col_release,
+            "gbif_col_release": gbif_col_release,
             "gbif_facet_entries": facet_entries,
             "species": species,
             "built_utc": datetime.now(UTC).replace(microsecond=0).isoformat(),
@@ -177,7 +259,7 @@ def _backoff_seconds(error: Exception, attempt: int) -> float:
 
 
 def _fetch_facet(region_type: RegionType, region: str, min_occurrence_count: int) -> dict:
-    """Fetch the complete GBIF 'taxonKey' occurrence facet for a region in one request.
+    """Fetch the complete GBIF 'speciesKey' occurrence facet for a region in one request.
 
     Retries transient failures (429/5xx or network errors) up to MAX_RETRIES times.
     A 4xx error other than 429 is treated as an invalid region code and raised
@@ -189,8 +271,8 @@ def _fetch_facet(region_type: RegionType, region: str, min_occurrence_count: int
             return occurrences.search(
                 country=region if region_type == "country" else None,
                 continent=region if region_type == "continent" else None,
-                phylumKey=PHYLUM_TAXON_KEY, facet="taxonKey", limit=0,
-                taxonKey_facetLimit=FACET_LIMIT, taxonKey_facetOffset=0,
+                checklistKey=GBIF_CHECKLIST_KEY, phylumKey=PHYLUM_TAXON_KEY, facet="speciesKey", limit=0,
+                speciesKey_facetLimit=FACET_LIMIT, speciesKey_facetOffset=0,
                 facetMincount=min_occurrence_count,
                 timeout=REQUEST_TIMEOUT_S,
             )
@@ -214,12 +296,14 @@ def _fetch_facet(region_type: RegionType, region: str, min_occurrence_count: int
     )
 
 
-def get_region_taxon_counts(region_type: RegionType, region: str, min_occurrence_count: int) -> dict[int, int]:
-    """Fetch all GBIF taxon keys with occurrence records in a region.
+def get_region_species_counts(region_type: RegionType, region: str, min_occurrence_count: int) -> dict[str, int]:
+    """Fetch all GBIF species keys with occurrence records in a region.
 
-    Requests GBIF's complete 'taxonKey' occurrence facet in one call, restricted server-side
-    to PHYLUM_TAXON_KEY if set. The facet still blends every taxonomic rank together within
-    that scope, so it must be intersected against known species-level keys to be meaningful.
+    Requests GBIF's complete 'speciesKey' occurrence facet in one call, restricted server-side
+    to PHYLUM_TAXON_KEY if set. The facet holds the accepted species of each record's lineage, so
+    records identified to a subspecies or by a synonym count for their accepted species. The
+    mapping's keys are accepted species keys for that reason: a synonym or subspecies key would
+    never appear in this facet (unlike in the 'taxonKey' facet, which holds every key of a lineage).
 
     Args:
         region_type: GBIF occurrence search parameter the region is passed as.
@@ -232,7 +316,7 @@ def get_region_taxon_counts(region_type: RegionType, region: str, min_occurrence
             FACET_LIMIT and is therefore truncated.
 
     Returns:
-        Mapping of GBIF taxon key to its occurrence record count in the region.
+        Mapping of COL XR species key (string) to its occurrence record count in the region.
     """
     facet = _fetch_facet(region_type, region, min_occurrence_count)
     counts = facet["facets"][0]["counts"] if facet.get("facets") else []
@@ -242,7 +326,7 @@ def get_region_taxon_counts(region_type: RegionType, region: str, min_occurrence
             f"filling FACET_LIMIT ({FACET_LIMIT}) -- the result is truncated."
         )
     logger.debug("%s '%s': fetched %d facet entries", region_type.capitalize(), region, len(counts))
-    return {int(entry["name"]): int(entry["count"]) for entry in counts}
+    return {str(entry["name"]): int(entry["count"]) for entry in counts}
 
 
 def build_region_filter_csv(
@@ -254,14 +338,15 @@ def build_region_filter_csv(
 ) -> Path:
     """Resolve a species-list CSV for a region from cache or by querying GBIF.
 
-    The cached CSV leads with a 'species' column, so it can be handed directly to pybioclip,
-    followed by the TOL taxonomic context and the GBIF columns for inspection. A JSON file of
-    the same name records which mapping and settings produced it; the cache is rebuilt
-    automatically if the TOL-to-GBIF mapping has changed since. If rebuilding fails while an
-    existing cache is present (typically an offline run), the outdated cache is used and a
-    warning is logged.
+    The cached CSV leads with a 'species' column (the TOL name), so it can be handed directly to
+    pybioclip, followed by 'gbif_species', 'gbif_species_key' and 'gbif_occurrence_count'. It is
+    kept lean on purpose: further details of a species are in the species mapping, joined on
+    'gbif_species_key'. A JSON file of the same name records which mapping and settings produced
+    it; the cache is rebuilt automatically if the species mapping has changed since. If
+    rebuilding fails while an existing cache is present (typically an offline run), the outdated
+    cache is used and a warning is logged.
 
-    'gbif_occurrence_count' is the number of records GBIF holds for the taxon in that region,
+    'gbif_occurrence_count' is the number of records GBIF holds for the species in that region,
     so TOL species that are synonyms of each other share a key and repeat the same count.
 
     Args:
@@ -273,7 +358,7 @@ def build_region_filter_csv(
             function's own work. Callers embedding it in a wider range should scale accordingly.
 
     Raises:
-        KeyError: If the TOL-to-GBIF mapping is not a registered asset.
+        KeyError: If the species mapping is not a registered asset.
         ValueError: If GBIF rejects the region code, or no TOL species in the mapping have
                     any occurrence record in the given region.
         RuntimeError: If fetching from GBIF fails after exhausting retries and no cached
@@ -284,7 +369,7 @@ def build_region_filter_csv(
     """
     region = region.upper()
     label = f"{region_type} '{region}'"
-    cache_path = FILTERS_PATH / f"tol_gbif_species_{_scope}_minocc{min_occurrence_count}_{region}.csv"
+    cache_path = FILTERS_PATH / f"region_filter_{_scope}_{region}_minocc{min_occurrence_count}.csv"
     meta_path = cache_path.with_suffix(".json")
     cache_exists = cache_path.exists()
 
@@ -308,8 +393,8 @@ def build_region_filter_csv(
             progress_callback(int(pct / 10), 100, message)  # 0-10%
 
     try:
-        mapping = load_tol_gbif_taxon_keys(download_progress)
-        mapping_sha256 = compute_sha256(TOL_GBIF_TAXON_KEYS_CSV)
+        mapping = load_species_mapping(download_progress)
+        mapping_sha256 = compute_sha256(SPECIES_MAPPING_CSV)
 
         if progress_callback:
             progress_callback(
@@ -317,7 +402,7 @@ def build_region_filter_csv(
             )
         logger.info("Querying GBIF for %s taxa recorded in %s...", _scope, label)
 
-        region_taxon_counts = get_region_taxon_counts(region_type, region, min_occurrence_count)
+        region_species_counts = get_region_species_counts(region_type, region, min_occurrence_count)
     except (OSError, RuntimeError, RequestException) as e:
         if not cache_exists:
             raise
@@ -327,23 +412,41 @@ def build_region_filter_csv(
         )
         return cache_path
 
-    logger.info("%s: %d GBIF taxa at any rank with >=%d occurrence records",
-                label[0].upper() + label[1:], len(region_taxon_counts), min_occurrence_count)
+    logger.info("%s: %d GBIF species with >=%d occurrence records",
+                label[0].upper() + label[1:], len(region_species_counts), min_occurrence_count)
+
+    # COL releases are informational only: a mapping on an older release still works, but taxa
+    # that COL has split, merged or renamed since then can be missing from the region filter
+    try:
+        mapping_col_release = load_species_mapping_provenance().get("col_release")
+    except (OSError, KeyError, ValueError) as e:
+        logger.warning("Could not load the provenance record of the species mapping: %s", e)
+        mapping_col_release = None
+    try:
+        gbif_col_release = fetch_col_release()
+    except (RequestException, KeyError, ValueError) as e:
+        logger.warning("Could not fetch the COL release GBIF currently uses: %s", e)
+        gbif_col_release = None
+    same = (mapping_col_release is not None and gbif_col_release is not None
+            and mapping_col_release.get("clb_dataset_key") == gbif_col_release.get("clb_dataset_key"))
+    logger.info("COL release of GBIF occurrence data: %s, of the species mapping: %s%s",
+                format_col_release(gbif_col_release), format_col_release(mapping_col_release),
+                " (same release)" if same else "")
 
     if progress_callback:
         progress_callback(90, 100, f"Matching species for {label}...")
 
     counts = pl.DataFrame(
         {
-            "gbif_taxon_key": list(region_taxon_counts.keys()),
-            "gbif_occurrence_count": list(region_taxon_counts.values()),
+            "gbif_species_key": list(region_species_counts.keys()),
+            "gbif_occurrence_count": list(region_species_counts.values()),
         },
-        schema={"gbif_taxon_key": pl.Int64, "gbif_occurrence_count": pl.Int64},
+        schema={"gbif_species_key": pl.String, "gbif_occurrence_count": pl.Int64},
     )
     matched = (
-        mapping.join(counts, on="gbif_taxon_key", how="inner")
-        .select("species", "genus", "family", "order", "class",
-                "gbif_taxon_key", "gbif_canonical_name", "gbif_occurrence_count")
+        mapping.join(counts, on="gbif_species_key", how="inner")
+        .select(pl.col("bioclip_species").alias("species"), "gbif_species", "gbif_species_key",
+                "gbif_occurrence_count")
         .unique(subset=["species"], keep="first")
         .sort("species")
     )
@@ -355,8 +458,8 @@ def build_region_filter_csv(
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     matched.write_csv(cache_path)
     _write_cache_metadata(
-        meta_path, region_type, region, min_occurrence_count,
-        mapping_sha256, len(region_taxon_counts), matched.height
+        meta_path, region_type, region, min_occurrence_count, mapping_sha256,
+        mapping_col_release, gbif_col_release, len(region_species_counts), matched.height
     )
     logger.info("Built region filter for %s: %d of them match a BioCLIP species -> '%s'",
                 label, matched.height, cache_path)
@@ -388,7 +491,7 @@ def load_region_species(
             all regions. Callers embedding it in a wider range should scale accordingly.
 
     Raises:
-        KeyError: If the TOL-to-GBIF mapping is not a registered asset.
+        KeyError: If the species mapping is not a registered asset.
         ValueError: If GBIF rejects a region code, or a region has no matching species.
         RuntimeError: If fetching from GBIF fails and no cached CSV exists to fall back on.
 

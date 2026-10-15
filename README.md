@@ -177,9 +177,9 @@ uv run --no-sync gui
    be cancelled at any time.
 
 Models and supporting files referenced in the configuration (e.g. classification models,
-the BioCLIP Tree of Life Arthropoda-to-GBIF taxon key mapping used to build per-country
-and per-continent species filters) are downloaded automatically on first use from the
-release assets.
+the BioCLIP-to-GBIF species mapping of all Arthropoda in the BioCLIP Tree of Life, used to
+build per-country and per-continent region filters) are downloaded automatically on first use
+from the release assets.
 
 > [!NOTE]
 > The BioCLIP 2 model and associated files are downloaded from Hugging Face on first use,
@@ -355,8 +355,16 @@ Classification settings applied to cropped detections.
 Country and continent filters are built on first use by querying the GBIF occurrence API
 (this can take a few minutes) and are then cached in `filters/`. The scripts that regenerate
 the underlying reference data (`filters/resolve_gbif_country_codes.py`,
-`filters/resolve_tol_gbif_species.py`) only need to be re-run when GBIF's country
+`filters/build_bioclip_gbif_species_mapping.py`) only need to be re-run when GBIF's country
 enumeration or the BioCLIP Tree of Life version changes.
+
+Tree of Life species are matched to GBIF species keys of the
+[Catalogue of Life](https://www.catalogueoflife.org/) Extended Release (COL XR), the taxonomy
+GBIF uses to interpret occurrence records. The mapping is updated with new releases of this
+software, and its COL release is recorded next to it (`filters/bioclip_gbif_species_mapping_*.json`).
+When a filter is built, the log shows the COL release of the GBIF occurrence data and of the
+mapping. If they differ, the filter still works, but species that COL has split, merged or
+renamed since the mapping's release can be missing from it.
 
 Countries and continents are assigned differently by GBIF, so a continent is not simply the
 sum of its countries:
