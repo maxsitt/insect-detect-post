@@ -357,7 +357,8 @@ and the prediction with its weighted probability. Status: &#9675; to do, &#10003
 and &#8627; a track continuing it.</li>
 <li><b>Center: the track.</b> Track info and the <i>Model prediction</i> shown above the crops viewer. The name
 of the predicted taxon (and candidates) is the raw BioCLIP 2 output, the lineage below it and the determination
-dropdowns use the GBIF canonical name. Your determination is compared with the canonical name.
+dropdowns use the accepted GBIF species name (Catalogue of Life), so a synonym predicted by the model counts as
+its accepted species. Your determination is compared with this name.
 The weighted probability is the mean probability, lowered when only some of the crops were predicted as this taxon.
 <i>1st choice in n / m crops</i> says how often it was the model&rsquo;s best guess (top-1). The candidates below
 list the alternatives. Click a crop to show its own prediction at the bottom, double-click it for single view.
@@ -977,7 +978,7 @@ class SetupPage(QWidget):
             self.taxonomy = TaxonomyIndex()
         # Make every predicted taxon selectable
         lineages = [
-            self.taxonomy.canonical_lineage(run.model_lineage(row))
+            self.taxonomy.canonical_lineage(run.model_lineage(row), row.get("gbif_species"))
             for row in run.tracks.unique(subset=[f"bioclip_{r}" for r in run.active_ranks], maintain_order=True)
             .to_dicts()
         ]

@@ -9,6 +9,10 @@ Built from 'filters/bioclip_gbif_species_mapping_Arthropoda.csv': species with a
 named by their GBIF species name (the canonical name), higher ranks from the Tree of Life.
 Taxa predicted in the run and free-text entries are added on top.
 
+The model's species is compared as GBIF name: the run's own 'gbif_species' (written by the
+pipeline since the species mapping is based on COL) where it has one, else the Tree of Life name
+mapped with this list (runs processed before 'gbif_species' existed).
+
 Functions:
     file_provenance(): Name, size and SHA-256 checksum of a file.
     rank_index(): Position of a rank in VALIDATION_RANKS.
@@ -23,14 +27,18 @@ from __future__ import annotations
 
 import bisect
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
 import polars as pl
 
 from insectdetect_post.asset_manager import compute_sha256, ensure_asset
-from insectdetect_post.build_region_filter import SPECIES_MAPPING_CSV, load_species_mapping
+from insectdetect_post.build_region_filter import (
+    SPECIES_MAPPING_CSV,
+    load_species_mapping,
+    load_species_mapping_provenance,
+)
 from insectdetect_post.constants import FILTER_ASSETS_JSON, RANK_ORDER
 
 # Create module-level logger
@@ -175,8 +183,14 @@ class TaxonomyIndex:
         index.tol_to_canonical = dict(
             zip(renamed["bioclip_species"].to_list(), renamed["gbif_species"].to_list(), strict=True)
         )
+        try:
+            col_release = load_species_mapping_provenance().get("col_release")
+        except (OSError, KeyError, ValueError) as e:
+            logger.warning("Could not load the provenance record of the species mapping: %s", e)
+            col_release = None
         index.provenance = file_provenance(SPECIES_MAPPING_CSV) | {
             "source": "species_mapping",
+            "col_release": col_release,
             "n_species_tol": mapping.height,
             "n_species_matched": index.n_species,
         }
@@ -190,11 +204,28 @@ class TaxonomyIndex:
             return None
         return self.tol_to_canonical.get(tol_name, tol_name)
 
-    def canonical_lineage(self, lineage: Lineage) -> Lineage:
-        """Return a copy of a lineage with the species mapped to its GBIF canonical name."""
+    def canonical_lineage(self, lineage: Lineage, gbif_species: str | None = None) -> Lineage:
+        """Return a copy of a model lineage with the species as GBIF canonical name.
+
+        Args:
+            lineage: Model lineage with the Tree of Life species.
+            gbif_species: The run's 'gbif_species' of the track, used if given.
+        """
         result = dict(lineage)
-        result["species"] = self.canonical_species(lineage.get("species"))
+        result["species"] = gbif_species or self.canonical_species(lineage.get("species"))
         return result
+
+    def canonical_species_expr(self, columns: Sequence[str]) -> pl.Expr:
+        """Return the model's species as GBIF canonical name, for a frame with the given columns.
+
+        The run's 'gbif_species' where it has one, else 'bioclip_species' mapped with
+        'tol_to_canonical' (unchanged if unknown). A species without a GBIF key has no
+        'gbif_species' and no entry in 'tol_to_canonical' either, so it keeps its Tree of Life name.
+        """
+        mapped = pl.col("bioclip_species").replace(self.tol_to_canonical)
+        if "gbif_species" in columns:
+            return pl.coalesce(pl.col("gbif_species"), mapped)
+        return mapped
 
     def add_lineages(self, lineages: Iterable[Lineage], source: str) -> int:
         """Add lineages that are not yet indexed (predicted taxa, free-text entries).

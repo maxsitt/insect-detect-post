@@ -489,10 +489,8 @@ class ValidationSession:
             col = f"bioclip_{rank}"
             if col not in sampled.columns:
                 pred_cols.append(pl.lit(None, dtype=pl.String).alias(f"pred_{rank}"))
-            elif rank == "species" and taxonomy.tol_to_canonical:
-                pred_cols.append(
-                    pl.col(col).replace(taxonomy.tol_to_canonical).alias("pred_species")
-                )
+            elif rank == "species":
+                pred_cols.append(taxonomy.canonical_species_expr(sampled.columns).alias("pred_species"))
             else:
                 pred_cols.append(pl.col(col).alias(f"pred_{rank}"))
         base = sampled.select(
@@ -835,10 +833,11 @@ class ValidationSession:
     def export_merged(self, run: ValidationRun, taxonomy: TaxonomyIndex | None = None) -> Path:
         """Write the final CSV joined with the verdicts ('<final_stem>_validated_<stem>.csv').
 
-        Adds 'bioclip_species_canonical' (the model's species as GBIF canonical name, next to the raw
-        'bioclip_species'), 'combined_<rank>' (validator's names for validated tracks, indet. empty and an
-        aggregate species with ' agg.', else the model's), 'combined_source' and 'individual_id' /
-        'individual_n_tracks'.
+        Adds 'combined_<rank>' (validator's names for validated tracks, indet. empty and an aggregate
+        species with ' agg.', else the model's, its species as GBIF canonical name like the comparison),
+        'combined_source' and 'individual_id' / 'individual_n_tracks'. The final CSV's 'gbif_species'
+        and 'gbif_species_key' come along; a validator's species gets its key by joining
+        'combined_species' with 'gbif_species' of the species mapping.
 
         Returns:
             Path of the written CSV.
@@ -849,13 +848,8 @@ class ValidationSession:
         merged = run.tracks.join(frame.select(join_cols), on=TRACK_KEY_COLUMNS, how="left", maintain_order="left")
         merged = merged.with_columns(pl.col("validated").fill_null(False))
 
-        # The model's species in the form the validation compares on, next to the raw Tree of Life name
-        canonical_map = taxonomy.tol_to_canonical if taxonomy else {}
-        if "bioclip_species" in merged.columns:
-            columns = merged.columns
-            i = columns.index("bioclip_species") + 1
-            merged = merged.select(*columns[:i], pl.col("bioclip_species").replace(canonical_map)
-                                   .alias("bioclip_species_canonical"), *columns[i:])
+        # The model's species in the form the validation compares on
+        model_species = (taxonomy or TaxonomyIndex()).canonical_species_expr(merged.columns)
         validated = pl.col("validated")
         false_positive = pl.col("verdict") == "false_positive"
         combined_cols = []
@@ -864,7 +858,7 @@ class ValidationSession:
             if model_col not in merged.columns:
                 model_expr = pl.lit(None, dtype=pl.String)
             elif rank == "species":
-                model_expr = pl.col("bioclip_species_canonical")
+                model_expr = model_species
             else:
                 model_expr = pl.col(model_col)
             val_col = pl.col(f"val_{rank}")
