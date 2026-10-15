@@ -695,7 +695,7 @@ requires-dist = [
     { name = "pyside6", specifier = ">=6.11.2,<7" },
     { name = "pyyaml", specifier = ">=6.0.3,<7" },
     { name = "qt-logging", specifier = ">=0.1.1,<1" },
-    { name = "qt-parameters", specifier = ">=1.3.2,<2" },
+    { name = "qt-parameters", specifier = ">=1.5.1,<2" },
     { name = "qt-themes", specifier = ">=0.4.0,<1" },
     { name = "torch", marker = "extra == 'cpu'", specifier = ">=2.14.0,<3", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "insect-detect-post", extra = "cpu" } },
     { name = "torch", marker = "extra == 'cuda126'", specifier = ">=2.14.0,<3", index = "https://download.pytorch.org/whl/cu126", conflict = { package = "insect-detect-post", extra = "cuda126" } },
@@ -2192,15 +2192,14 @@ wheels = [
 
 [[package]]
 name = "qt-parameters"
-version = "1.3.2"
+version = "1.5.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "qt-material-icons" },
     { name = "qtpy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b3/5a/fc29abfbf6ac24a317da1317fdfb128484b06655b7951d2e08d5cda772a1/qt_parameters-1.3.2.tar.gz", hash = "sha256:b4048070d0154c5b7be4729758f5dcce23aa95939e16d57c34e626ecfb5082cb", size = 26298, upload-time = "2026-06-20T20:05:13.057Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/62/10/fae6f660f1e34497a5b90575de21a53d5a2b39338eb7091b43a60ec35e8a/qt_parameters-1.5.1.tar.gz", hash = "sha256:c072a349eea322aa79acb600eb796668c4ebd96454a3f12847daf32f5d8cc12b", size = 48136, upload-time = "2026-10-15T20:41:16.185Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/50/38/331ee339e89a71b1ae4bbb57e281794e9bb61dec9814b508d9c4022cde54/qt_parameters-1.3.2-py3-none-any.whl", hash = "sha256:0ebd504bb8ddbbc166aea97fc896610fc16d812a2ab59b0cd9537d6bc474f470", size = 30037, upload-time = "2026-06-20T20:05:11.927Z" },
+    { url = "https://files.pythonhosted.org/packages/ff/a7/5e640e83f1babf56265701eb2ad1e9f695dda114726ce627aed2d542cd41/qt_parameters-1.5.1-py3-none-any.whl", hash = "sha256:d554eda5d379ac3a5aee4b908f767f4b5caa6d655a48dc8baf560176c1cae6a3", size = 55695, upload-time = "2026-10-15T20:41:14.841Z" },
 ]
 
 [[package]]

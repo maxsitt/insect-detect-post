@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Literal, cast, get_args, get_origin
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, ValidationInfo, field_validator, model_validator
 
 from insectdetect_post.constants import (
     BIOCLIP_CONTINENT_OPTIONS,
@@ -117,11 +117,15 @@ class BioclipFilterArthropodsConfig(BaseModel):
 
     @field_validator("taxa", "countries", "continents")
     @classmethod
-    def _normalize_selection(cls, values: list[str]) -> list[str]:
-        """Collapse to 'all' if selected, otherwise drop duplicates while keeping the order."""
+    def _normalize_selection(cls, values: list[str], info: ValidationInfo) -> list[str]:
+        """Collapse to 'all' if selected, otherwise drop duplicates and sort into option order.
+
+        The option order is the order the GUI returns, so a loaded config does not read as edited.
+        """
         if "all" in values:
             return ["all"]
-        return list(dict.fromkeys(values))
+        options = get_field_literals(cls, info.field_name or "")
+        return [option for option in options if option in values]
 
     @model_validator(mode="after")
     def _single_region_type(self) -> BioclipFilterArthropodsConfig:

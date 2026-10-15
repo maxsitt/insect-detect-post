@@ -97,7 +97,14 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from qt_parameters import BoolParameter, ComboParameter, ParameterForm, PathParameter, StringParameter
+from qt_parameters import (
+    BoolParameter,
+    ComboParameter,
+    MultiComboParameter,
+    ParameterForm,
+    PathParameter,
+    StringParameter,
+)
 
 from insectdetect_post.constants import (
     BASE_PATH,
@@ -144,7 +151,6 @@ from insectdetect_post.gui_utils import (
     resolve_and_validate_path,
     save_theme,
 )
-from insectdetect_post.multi_combo_parameter import MultiComboParameter
 from insectdetect_post.styled_button import StyledButton
 from insectdetect_post.update_button import UpdateButton
 from insectdetect_post.validation_run import TrackKey, ValidationRun
@@ -735,14 +741,16 @@ class SetupPage(QWidget):
         self.taxa_rank_param.set_label("Filter taxa at rank")
         self.taxa_rank_param.setToolTip("Only validate tracks whose prediction at this rank is selected below")
         self.filter_form.add_parameter(self.taxa_rank_param, checkable=True)
-        self.taxa_values_param = MultiComboParameter("taxa_values")
+        self.taxa_values_param = MultiComboParameter[str]("taxa_values")
+        self.taxa_values_param.combo.set_maximum_display_items(0)  # show every selected entry
         self.taxa_values_param.set_label("Taxa")
         self.taxa_values_param.set_placeholder("Select taxa...")
         self.filter_form.add_parameter(self.taxa_values_param)
         taxa_check = self.filter_form.widgets()["taxa_rank_enabled"]
         self.taxa_values_param.setEnabled(taxa_check.value())
         taxa_check.value_changed.connect(self.taxa_values_param.setEnabled)
-        self.settings_values_param = MultiComboParameter("setting_values")
+        self.settings_values_param = MultiComboParameter[str]("setting_values")
+        self.settings_values_param.combo.set_maximum_display_items(0)  # show every selected entry
         self.settings_values_param.set_label("Filter camera settings")
         self.settings_values_param.set_placeholder("Select camera settings...")
         self.settings_values_param.setToolTip("Only validate tracks of sessions with one of these camera settings; "
@@ -1248,8 +1256,8 @@ class SetupPage(QWidget):
         self.taxa_rank_param.set_value(default_rank)
         strata_ranks = available_strata_ranks(self.run.active_ranks, self.run.model_rank)
         self.stratum_rank_param.set_items([(_RANK_LABELS[r], r) for r in strata_ranks] or [("Order", "order")])
-        if "family" in strata_ranks:
-            self.stratum_rank_param.set_value("family")
+        # Explicit: set_items() keeps the previous value when the ranks equal the previous run's
+        self.stratum_rank_param.set_value("family" if "family" in strata_ranks else self.stratum_rank_param.items()[0][1])
         # Setting filter and strata need at least two setting groups
         settings_available = setting_strata_available(self.run.tracks)
         self.settings_filter_check.set_value(False)
@@ -1694,24 +1702,6 @@ class _TaxonNameLabel(QLabel):
         event.accept()
 
 
-class _LinkCombo(MultiComboParameter):
-    """Multi-select combo of the earlier tracks a track continues, with a custom summary text."""
-
-    def _init_ui(self) -> None:
-        """Build the combo with an empty summary."""
-        super()._init_ui()
-        self._summary: Callable[[tuple[Any, ...]], str] = lambda _values: ""
-
-    def set_summary(self, summary: Callable[[tuple[Any, ...]], str]) -> None:
-        """Set the function that turns the checked track IDs into the combo text."""
-        self._summary = summary
-        self._refresh_text()
-
-    def _refresh_text(self) -> None:
-        """Show the summary of the ticked track IDs as the combo text."""
-        self.combo.set_display_text(self._summary(self.value()))
-
-
 class _SingleRow(QScrollArea):
     """Fixed-height row that scrolls horizontally instead of wrapping.
 
@@ -1951,7 +1941,7 @@ class VerdictPanel(QWidget):
         self.link_btn = toggle_button("Same individual  (L)", _LINK_BTN_TOOLTIP, COLOR_FLAG_SAME_INDIVIDUAL)
         self.link_btn.toggled.connect(self._on_link_toggled)
         self._apply_link_style()  # adds the tint of a first track
-        self.link_combo = _LinkCombo()
+        self.link_combo = MultiComboParameter[str]()
         self.link_combo.setToolTip(f"Earlier tracks of this device/session that ended at most "
                                    f"{VALIDATION_SAME_INDIVIDUAL_WINDOW_S:g} s before this one started (or overlap it "
                                    "slightly); tick every one that shows the same individual")
@@ -2594,7 +2584,8 @@ class VerdictPanel(QWidget):
         self._syncing_links = True  # not an edit
         try:
             self.link_combo.set_items(entries)
-            self.link_combo.set_summary(summary)
+            # Shown instead of the checked labels, also when nothing is checked (no placeholder is set)
+            self.link_combo.combo.set_formatter(lambda items, _max: summary(tuple(item.data() for item in items)))
             self.link_combo.set_value(tuple(tid for tid in shown if tid in links))
         finally:
             self._syncing_links = False

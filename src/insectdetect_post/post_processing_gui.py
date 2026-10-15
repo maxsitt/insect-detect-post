@@ -45,7 +45,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from qt_logging import LogCache, LogViewer
-from qt_parameters import ComboParameter, ParameterForm, PathParameter
+from qt_parameters import ComboParameter, MultiComboParameter, ParameterForm, PathParameter
 
 from insectdetect_post.asset_manager import list_registered_filenames
 from insectdetect_post.config import (
@@ -91,7 +91,6 @@ from insectdetect_post.gui_utils import (
     restore_enabled_values,
     save_theme,
 )
-from insectdetect_post.multi_combo_parameter import MultiComboParameter
 from insectdetect_post.pipeline_runner import PipelineRunner
 from insectdetect_post.styled_button import StyledButton
 from insectdetect_post.update_button import UpdateButton
@@ -118,15 +117,17 @@ _FIELD_CONSTRAINTS: dict[str, dict[str, int | float | None]] = {
 }
 _DEFAULTS = AppConfig()
 BIOCLIP_RANK_OPTIONS = get_field_literals(AppConfig, "classification", "bioclip", "rank")
-FILTER_TAXA_OPTIONS = get_field_literals(
-    AppConfig, "classification", "bioclip", "filter_arthropods", "taxa"
-)
-FILTER_COUNTRY_OPTIONS = get_field_literals(
-    AppConfig, "classification", "bioclip", "filter_arthropods", "countries"
-)
-FILTER_CONTINENT_OPTIONS = get_field_literals(
-    AppConfig, "classification", "bioclip", "filter_arthropods", "continents"
-)
+
+
+def _filter_options(field: str) -> tuple[str, ...]:
+    """Return the selectable values of a BioCLIP filter field, without its exclusive 'all'."""
+    literals = get_field_literals(AppConfig, "classification", "bioclip", "filter_arthropods", field)
+    return tuple(value for value in literals if value != "all")
+
+
+FILTER_TAXA_OPTIONS = _filter_options("taxa")
+FILTER_COUNTRY_OPTIONS = _filter_options("countries")
+FILTER_CONTINENT_OPTIONS = _filter_options("continents")
 
 
 def _get_constraints(path: str) -> tuple[int | float, int | float]:
@@ -412,20 +413,22 @@ class ConfigWidget(QWidget):
             bioclip_form, "filter_arthropods", "Filter Arthropods",
             tooltip="Restrict predictions to the selected arthropod groups (and optionally a region)"
         )
-        taxa_select = MultiComboParameter("taxa")
+        taxa_select = MultiComboParameter[str]("taxa")
         taxa_select.set_label("Taxa")
         taxa_select.set_items(FILTER_TAXA_OPTIONS)
-        taxa_select.set_exclusive_value("all")
-        taxa_select.set_min_selection(1)  # an empty selection is rejected by the config schema
+        taxa_select.set_exclusive_items(("all",))
+        taxa_select.set_minimum_selection(1)  # an empty selection is rejected by the config schema
+        taxa_select.combo.set_maximum_display_items(0)  # show every selected entry
         taxa_select.set_default(tuple(_DEFAULTS.classification.bioclip.filter_arthropods.taxa))
         taxa_select.setToolTip("Force BioCLIP to only predict species within the selected taxa")
         filter_arthropods_form.add_parameter(taxa_select)
 
-        countries_select = MultiComboParameter("countries")
+        countries_select = MultiComboParameter[str]("countries")
         countries_select.set_label("Countries")
         countries_select.set_items(FILTER_COUNTRY_OPTIONS)
-        countries_select.set_exclusive_value("all")
-        countries_select.set_min_selection(1)  # an empty selection is rejected by the config schema
+        countries_select.set_exclusive_items(("all",))
+        countries_select.set_minimum_selection(1)  # an empty selection is rejected by the config schema
+        countries_select.combo.set_maximum_display_items(0)  # show every selected entry
         countries_select.set_default(tuple(_DEFAULTS.classification.bioclip.filter_arthropods.countries))
         countries_select.setToolTip(
             "Force BioCLIP to only predict species within the selected countries, based on GBIF "
@@ -434,11 +437,12 @@ class ConfigWidget(QWidget):
         )
         filter_arthropods_form.add_parameter(countries_select)
 
-        continents_select = MultiComboParameter("continents")
+        continents_select = MultiComboParameter[str]("continents")
         continents_select.set_label("Continents")
         continents_select.set_items(FILTER_CONTINENT_OPTIONS)
-        continents_select.set_exclusive_value("all")
-        continents_select.set_min_selection(1)  # an empty selection is rejected by the config schema
+        continents_select.set_exclusive_items(("all",))
+        continents_select.set_minimum_selection(1)  # an empty selection is rejected by the config schema
+        continents_select.combo.set_maximum_display_items(0)  # show every selected entry
         continents_select.set_default(tuple(_DEFAULTS.classification.bioclip.filter_arthropods.continents))
         continents_select.setToolTip(
             "Force BioCLIP to only predict species within the selected continents, based on GBIF "
