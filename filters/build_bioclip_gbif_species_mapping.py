@@ -16,6 +16,11 @@ whose taxon keys are alphanumeric strings, via individual GBIF API calls in a Th
 Each row holds the Tree of Life lineage ('bioclip_*') next to the GBIF lineage ('gbif_*'), both
 from species up to kingdom. The GBIF lineage adds subfamily, superfamily and suborder.
 
+Decisions this script takes on top of GBIF's answer are recorded per row in 'mapping_note':
+an ambiguous match (several exact candidates in COL, answered by GBIF with their common higher
+taxon) is resolved where the candidates allow it, and a match outside the expected phylum gets
+no species key.
+
 Scoped to PHYLUM_FILTER (insectdetect_post.constants); set to None to resolve the full TOL species list.
 
 Functions:
@@ -72,7 +77,8 @@ GBIF_RANK_COLUMNS = [f"gbif_{rank}" for rank in GBIF_RANKS]
 # Fixed column order for the output CSV
 COLUMN_ORDER = [
     *BIOCLIP_COLUMNS, *GBIF_RANK_COLUMNS,
-    "gbif_species_key", "gbif_authorship", "gbif_rank", "gbif_match_type", "gbif_status", "iucn_category",
+    "gbif_species_key", "gbif_authorship", "gbif_rank", "gbif_match_type", "gbif_status", "mapping_note",
+    "iucn_category",
 ]
 
 # Max workers for the GBIF API calls and retry/backoff parameters for transient failures
@@ -85,6 +91,14 @@ MAX_BACKOFF_S = 20.0
 SPECIES_OR_LOWER_RANKS = frozenset({
     "SPECIES", "SUBSPECIES", "VARIETY", "SUBVARIETY", "FORM", "SUBFORM",
 })
+
+# Values of 'mapping_note', the decisions this script takes on top of GBIF's match
+NOTE_SINGLE_SPECIES = "disambiguated_single_species"
+NOTE_BY_RANK = "disambiguated_by_{}"
+NOTE_PHYLUM_MISMATCH = "phylum_mismatch"
+
+# TOL ranks that, in this order, may pick one species among equally scored exact candidates
+DISAMBIGUATION_RANKS = ["family", "order", "class"]
 
 
 def fetch_tol_species_records() -> tuple[list[dict[str, str]], dict[str, str]]:
@@ -146,46 +160,33 @@ def _unresolved(match_type: str) -> dict[str, object]:
         "gbif_rank": None,
         "gbif_match_type": match_type,
         "gbif_status": None,
+        "mapping_note": None,
         "iucn_category": None,
     }
 
 
-def resolve_species_to_gbif(name: str, kingdom: str | None = None, phylum: str | None = None) -> dict[str, object]:
-    """Resolve a single TOL species name to a GBIF species key.
-
-    Queries GBIF's name match endpoint against GBIF_CHECKLIST_KEY with strict=True: the name must
-    match exactly after normalization (e.g. of Latin gender endings, reported as 'VARIANT'), with no
-    fuzzy matching of similar names and no fallback to a higher taxon. Strict scoring ignores every
-    rank of a supplied classification except the kingdom, which is sent to tell apart names that
-    exist in several kingdoms. `phylum` is only used to verify the result, never sent.
-
-    For a synonym, the GBIF lineage, gbif_species_key, gbif_authorship and gbif_rank describe the
-    accepted taxon, while gbif_status keeps describing the matched name, 'SYNONYM' still flags the
-    TOL name. If the accepted taxon is below species rank (e.g. a subspecies), gbif_species and
-    gbif_species_key are those of its species, while gbif_authorship and iucn_category, which would
-    describe the subspecies, are left empty.
-
-    A species key is only set at species rank or below and never for matchType 'HIGHERRANK', since
-    a name match can answer with a taxon of higher rank than the requested species.
+def _match_name(name: str, kingdom: str | None, verbose: bool = False) -> dict:
+    """Query GBIF's name match endpoint for a TOL species name, retrying transient failures.
 
     Args:
         name: TOL species scientific name.
         kingdom: Optional TOL kingdom, sent to disambiguate names that exist in several kingdoms.
-        phylum: Optional expected phylum, compared against the phylum GBIF returns.
+        verbose: If True, GBIF also returns the alternatives it considered ('diagnostics.alternatives').
+
+    Raises:
+        ValueError: If GBIF rejects the request (HTTP 4xx other than 429).
+        RuntimeError: If all MAX_RETRIES attempts fail.
 
     Returns:
-        Dict with the GBIF_RANK_COLUMNS keys (str | None) and gbif_species_key, gbif_authorship,
-        gbif_rank, gbif_match_type, gbif_status, iucn_category (IUCN Red List category code).
+        GBIF's match result.
     """
-    result: dict | None = None
     last_error: Exception | None = None
     for attempt in range(MAX_RETRIES):
         try:
-            result = gbif_species.name_backbone(
+            return gbif_species.name_backbone(
                 scientificName=name, taxonRank="species", kingdom=kingdom, strict=True,
-                checklistKey=GBIF_CHECKLIST_KEY, timeout=REQUEST_TIMEOUT_S
+                verbose=True if verbose else None, checklistKey=GBIF_CHECKLIST_KEY, timeout=REQUEST_TIMEOUT_S
             )
-            break
         except HTTPError as e:
             status = e.response.status_code if e.response is not None else None
             if status is not None and 400 <= status < 500 and status != 429:
@@ -197,35 +198,43 @@ def resolve_species_to_gbif(name: str, kingdom: str | None = None, phylum: str |
             last_error = e
         if attempt < MAX_RETRIES - 1:
             time.sleep(_backoff_seconds(last_error, attempt))
-    if result is None:
-        raise RuntimeError(f"Failed to resolve '{name}' after {MAX_RETRIES} attempts: {last_error}")
+    raise RuntimeError(f"Failed to resolve '{name}' after {MAX_RETRIES} attempts: {last_error}")
 
-    match_type = result.get("diagnostics", {}).get("matchType", "NONE")
-    usage = result.get("usage")
+
+def _parse_match(match: dict) -> dict[str, object]:
+    """Return the GBIF columns of a match result, the main answer or one of its alternatives.
+
+    For a synonym, the GBIF lineage, gbif_species_key, gbif_authorship and gbif_rank describe the
+    accepted taxon, while gbif_status keeps describing the matched name, 'SYNONYM' still flags the
+    TOL name. If the accepted taxon is below species rank (e.g. a subspecies), gbif_species and
+    gbif_species_key are those of its species, while gbif_authorship and iucn_category, which would
+    describe the subspecies, are left empty.
+
+    A species key is only set at species rank or below and never for matchType 'HIGHERRANK', since
+    a name match can answer with a taxon of higher rank than the requested species.
+    """
+    match_type = match.get("diagnostics", {}).get("matchType", "NONE")
+    usage = match.get("usage")
 
     if usage is None:
         return _unresolved(match_type)
 
     # For a synonym, the accepted taxon is the one the species key should point at
-    accepted_usage = result.get("acceptedUsage")
-    resolved_usage = accepted_usage if result.get("synonym", False) and accepted_usage else usage
+    accepted_usage = match.get("acceptedUsage")
+    resolved_usage = accepted_usage if match.get("synonym", False) and accepted_usage else usage
     resolved_rank = resolved_usage.get("rank")
 
     # The classification is that of the accepted taxon, from the domain down to the taxon itself
-    classification = {entry.get("rank"): entry for entry in result.get("classification") or []}
+    classification = {entry.get("rank"): entry for entry in match.get("classification") or []}
     lineage = {f"gbif_{rank}": classification.get(rank.upper(), {}).get("name") for rank in GBIF_RANKS}
 
     species_key = None
     if resolved_rank in SPECIES_OR_LOWER_RANKS and match_type != "HIGHERRANK":
         species_key = classification.get("SPECIES", {}).get("key")
 
-    if phylum is not None and species_key is not None and lineage["gbif_phylum"] not in (None, phylum):
-        logger.warning("'%s' resolved to GBIF phylum '%s', expected '%s' (species key %s)",
-                       name, lineage["gbif_phylum"], phylum, species_key)
-
     at_species_rank = resolved_rank == "SPECIES"
     iucn_category = next(
-        (status.get("statusCode") for status in result.get("additionalStatus") or []
+        (status.get("statusCode") for status in match.get("additionalStatus") or []
          if status.get("datasetAlias") == "IUCN"), None
     )
     return {
@@ -235,8 +244,91 @@ def resolve_species_to_gbif(name: str, kingdom: str | None = None, phylum: str |
         "gbif_rank": resolved_rank,
         "gbif_match_type": match_type,
         "gbif_status": usage.get("status"),
+        "mapping_note": None,
         "iucn_category": iucn_category if at_species_rank else None,
     }
+
+
+def _is_ambiguous(row: dict[str, object]) -> bool:
+    """Whether GBIF answered with a taxon above species rank, its answer to equally scored candidates."""
+    return row["gbif_match_type"] == "HIGHERRANK" and row["gbif_rank"] not in SPECIES_OR_LOWER_RANKS
+
+
+def _disambiguate(alternatives: list[dict], tol_lineage: dict[str, str | None]) -> dict[str, object] | None:
+    """Pick one species among the exact candidates GBIF could not decide between.
+
+    Every 'EXACT' alternative that resolves to a species key is a candidate. If all candidates are
+    the same species, it is taken. Otherwise they are narrowed down by the TOL family, then order,
+    then class: the first of these ranks some candidates agree with decides, and a pick is only made
+    if exactly one species agrees. Several agreeing species, e.g. a species listed twice in COL under
+    different keys, end without a pick.
+
+    Args:
+        alternatives: GBIF's 'diagnostics.alternatives' of a verbose name match.
+        tol_lineage: TOL lineage of the species, rank name -> taxon name (None if missing).
+
+    Returns:
+        GBIF columns of the picked candidate with 'mapping_note' set, or None if no pick is possible.
+    """
+    candidates = [row for row in map(_parse_match, alternatives)
+                  if row["gbif_match_type"] == "EXACT" and row["gbif_species_key"] is not None]
+
+    def pick(rows: list[dict[str, object]], note: str) -> dict[str, object]:
+        """Return the accepted name among same-species rows if there is one, with the note set."""
+        chosen = next((row for row in rows if row["gbif_status"] == "ACCEPTED"), rows[0])
+        return {**chosen, "mapping_note": note}
+
+    if not candidates:
+        return None
+    if len({row["gbif_species_key"] for row in candidates}) == 1:
+        return pick(candidates, NOTE_SINGLE_SPECIES)
+    for rank in DISAMBIGUATION_RANKS:
+        expected = tol_lineage.get(rank)
+        agreeing = [row for row in candidates if expected and row[f"gbif_{rank}"] == expected]
+        if not agreeing:
+            continue
+        if len({row["gbif_species_key"] for row in agreeing}) == 1:
+            return pick(agreeing, NOTE_BY_RANK.format(rank))
+        return None
+    return None
+
+
+def resolve_species_to_gbif(name: str, tol_lineage: dict[str, str | None] | None = None) -> dict[str, object]:
+    """Resolve a single TOL species name to a GBIF species key.
+
+    Queries GBIF's name match endpoint against GBIF_CHECKLIST_KEY with strict=True: the name must
+    match exactly after normalization (e.g. of Latin gender endings, reported as 'VARIANT'), with no
+    fuzzy matching of similar names and no fallback to a higher taxon. Strict scoring ignores every
+    rank of a supplied classification except the kingdom, which is sent to tell apart names that
+    exist in several kingdoms.
+
+    If COL holds several exact candidates that score equally, GBIF answers with their common higher
+    taxon ('HIGHERRANK'). The candidates are then requested again (verbose) and _disambiguate()
+    tries to pick one. A species key outside the TOL phylum is dropped ('phylum_mismatch').
+
+    Args:
+        name: TOL species scientific name.
+        tol_lineage: Optional TOL lineage, rank name (TOL_RANKS) -> taxon name (None if missing).
+            The kingdom is sent, the phylum verifies the result, family to class disambiguate.
+
+    Returns:
+        Dict with the GBIF_RANK_COLUMNS keys (str | None) and gbif_species_key, gbif_authorship,
+        gbif_rank, gbif_match_type, gbif_status, mapping_note, iucn_category (IUCN Red List code).
+    """
+    tol_lineage = tol_lineage or {}
+    kingdom = tol_lineage.get("kingdom")
+    row = _parse_match(_match_name(name, kingdom))
+
+    if _is_ambiguous(row):
+        alternatives = _match_name(name, kingdom, verbose=True).get("diagnostics", {}).get("alternatives") or []
+        row = _disambiguate(alternatives, tol_lineage) or row
+
+    phylum = tol_lineage.get("phylum")
+    if phylum and row["gbif_species_key"] is not None and row["gbif_phylum"] not in (None, phylum):
+        logger.warning("'%s' resolved to GBIF phylum '%s', expected '%s' -- species key %s dropped",
+                       name, row["gbif_phylum"], phylum, row["gbif_species_key"])
+        row = {**row, "gbif_species_key": None, "mapping_note": NOTE_PHYLUM_MISMATCH}
+    return row
 
 
 def resolve_all_species(records: list[dict[str, str]]) -> list[dict[str, object]]:
@@ -258,9 +350,9 @@ def resolve_all_species(records: list[dict[str, str]]) -> list[dict[str, object]
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_to_name = {
-            # Missing TOL ranks are empty strings, which must not be sent as a kingdom
-            executor.submit(resolve_species_to_gbif, name, record_by_name[name]["bioclip_kingdom"] or None,
-                            record_by_name[name]["bioclip_phylum"] or None): name
+            # Missing TOL ranks are empty strings, which must not be sent or compared as names
+            executor.submit(resolve_species_to_gbif, name,
+                            {rank: record_by_name[name][f"bioclip_{rank}"] or None for rank in TOL_RANKS}): name
             for name in unique_names
         }
         for future in tqdm(as_completed(future_to_name), total=len(future_to_name),
@@ -304,7 +396,7 @@ def write_provenance_json(
         col_release: COL release the names were matched against (see fetch_col_release()).
         tol_source: TOL species list file, revision and SHA-256 (see fetch_tol_species_records()), if known.
     """
-    df = pl.read_csv(csv_path, schema_overrides=dict.fromkeys(COLUMN_ORDER, pl.String))
+    df = pl.read_csv(csv_path, infer_schema=False)
 
     def counts(column: str) -> dict[str, int]:
         """Return the value counts of a column, most frequent first, missing values as 'null'."""
@@ -327,6 +419,7 @@ def write_provenance_json(
             "match_types": counts("gbif_match_type"),
             "statuses": counts("gbif_status"),
             "ranks": counts("gbif_rank"),
+            "mapping_notes": counts("mapping_note"),
             "iucn_categories": counts("iucn_category"),
         }, indent=2) + "\n",
         encoding="utf-8"
@@ -340,11 +433,28 @@ def load_previous_resolution(output_path: Path) -> pl.DataFrame | None:
         output_path: Path to the output CSV.
 
     Returns:
-        The existing DataFrame with every column as String, or None if output_path does not exist yet.
+        The existing DataFrame with every column as String (columns added to COLUMN_ORDER since it was
+        written as null), or None if output_path does not exist yet.
     """
     if not output_path.exists():
         return None
-    return pl.read_csv(output_path, schema_overrides=dict.fromkeys(COLUMN_ORDER, pl.String))
+    df = pl.read_csv(output_path, infer_schema=False)
+    return df.with_columns(pl.lit(None, dtype=pl.String).alias(c) for c in COLUMN_ORDER if c not in df.columns)
+
+
+def _needs_resolution() -> pl.Expr:
+    """Rows of a previous mapping to resolve again: failed, ambiguous or outside the TOL phylum.
+
+    Ambiguous rows are re-checked on every run (two requests each), so a later COL release that
+    removes the duplicates is picked up; rows with a phylum mismatch only until their key is dropped.
+    """
+    ambiguous = (pl.col("gbif_match_type") == "HIGHERRANK") & ~pl.col("gbif_rank").is_in(SPECIES_OR_LOWER_RANKS)
+    phylum_mismatch = (
+        pl.col("gbif_species_key").is_not_null() & pl.col("gbif_phylum").is_not_null()
+        & (pl.col("bioclip_phylum").fill_null("") != "")
+        & (pl.col("gbif_phylum") != pl.col("bioclip_phylum"))
+    )
+    return (pl.col("gbif_match_type") == "ERROR") | ambiguous | phylum_mismatch
 
 
 def _log_names(message: str, names: list[str], match_type: str, preview_limit: int = 20) -> None:
@@ -360,8 +470,8 @@ def _log_names(message: str, names: list[str], match_type: str, preview_limit: i
 def build_bioclip_gbif_species_mapping() -> bool:
     """Fetch, filter and resolve TOL to GBIF species, then write to CSV.
 
-    If output CSV already exists, only species with gbif_match_type == 'ERROR'
-    are re-resolved; all other rows are kept as-is with no new GBIF calls.
+    If output CSV already exists, only failed ('ERROR'), ambiguous ('HIGHERRANK' above species rank)
+    and phylum-mismatched rows are re-resolved; all other rows are kept as-is with no new GBIF calls.
 
     Returns:
         True on success (CSV written, or nothing to do), False on failure.
@@ -371,13 +481,13 @@ def build_bioclip_gbif_species_mapping() -> bool:
     tol_source: dict | None = None
 
     if previous is not None:
-        retry_df = previous.filter(pl.col("gbif_match_type") == "ERROR")
-        keep_df = previous.filter(pl.col("gbif_match_type") != "ERROR")
+        retry_df = previous.filter(_needs_resolution())
+        keep_df = previous.filter(~_needs_resolution())
         if retry_df.is_empty():
-            logger.info("'%s' already exists with no gbif_match_type == 'ERROR' rows to retry. "
-                        "Nothing to do.", OUTPUT_CSV)
+            logger.info("'%s' already exists with no failed, ambiguous or phylum-mismatched rows to "
+                        "retry. Nothing to do.", OUTPUT_CSV)
             return True
-        logger.info("Found existing '%s': retrying %d species with gbif_match_type == 'ERROR', "
+        logger.info("Found existing '%s': retrying %d failed, ambiguous or phylum-mismatched species, "
                     "keeping %d other rows as-is.", OUTPUT_CSV, retry_df.height, keep_df.height)
         records = retry_df.select(BIOCLIP_COLUMNS).to_dicts()
         keep_rows = keep_df.to_dicts()
@@ -422,8 +532,8 @@ def build_bioclip_gbif_species_mapping() -> bool:
         return False
 
     if keep_rows:
-        recovered = sum(1 for row in newly_resolved if row["gbif_match_type"] != "ERROR")
-        logger.info("Retry pass: %d/%d previously-failed species now resolved.",
+        recovered = sum(1 for row in newly_resolved if row["gbif_species_key"] is not None)
+        logger.info("Retry pass: %d/%d retried species now have a GBIF species key.",
                     recovered, len(newly_resolved))
 
     resolved = keep_rows + newly_resolved
@@ -435,6 +545,9 @@ def build_bioclip_gbif_species_mapping() -> bool:
     below_species = sum(1 for row in with_key if row["gbif_rank"] != "SPECIES")
     if below_species:
         logger.info("%d names resolved to a taxon below species rank, mapped to its species.", below_species)
+    notes = Counter(str(row["mapping_note"]) for row in resolved if row["mapping_note"] is not None)
+    if notes:
+        logger.info("Mapping notes: %s", ", ".join(f"{note} {count}" for note, count in notes.most_common()))
 
     def names_with(match_type: str) -> list[str]:
         return [str(row["bioclip_species"]) for row in resolved if row["gbif_match_type"] == match_type]
@@ -442,8 +555,8 @@ def build_bioclip_gbif_species_mapping() -> bool:
     if unmatched := names_with("NONE"):
         _log_names("%d species had no GBIF match (review manually):", unmatched, "NONE")
     if higher_rank_only := names_with("HIGHERRANK"):
-        _log_names("%d species only matched at a higher rank than species (genus/family/etc.) -- "
-                   "gbif_species_key left empty:", higher_rank_only, "HIGHERRANK")
+        _log_names("%d species only matched at a higher rank than species (genus/family/etc.), "
+                   "ambiguous candidates included -- gbif_species_key left empty:", higher_rank_only, "HIGHERRANK")
     if failed := names_with("ERROR"):
         _log_names("%d species failed to resolve after retries (network/rate-limit issues -- "
                    "re-run the script to retry just these):", failed, "ERROR")
