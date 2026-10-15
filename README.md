@@ -285,6 +285,7 @@ Each run creates a timestamped directory under `data_processed/` in your output 
         ├── 2026-08-05_14-30-12_<config>.json  # config snapshot for this run
         ├── 2026-08-05_14-30-12_run.log        # full log output
         ├── 2026-08-05_14-30-12_stats.json     # per-step durations
+        ├── filters/                           # applied BioCLIP region filters + mapping provenance
         ├── metadata/
         │   ├── <source>_metadata_merged.csv               # all source metadata, harmonized
         │   ├── <source>_metadata_merged_classified.csv    # + per-image predictions

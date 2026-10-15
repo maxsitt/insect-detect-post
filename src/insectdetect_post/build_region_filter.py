@@ -25,8 +25,10 @@ Functions:
     fetch_col_release():               Fetch the COL release GBIF currently matches names against.
     format_col_release():              Return a short label of a COL release record for log messages.
     get_region_species_counts():       Fetch all GBIF species keys with occurrence records in a region.
+    region_filter_path():              Return the path of a region's cached species-list CSV.
     build_region_filter_csv():         Resolve a species-list CSV for a region from cache or by querying GBIF.
     load_region_species():             Load species with GBIF occurrence records in any of the given regions.
+    copy_region_filters():             Copy the region filters and the mapping provenance into a run.
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import shutil
 import time
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
@@ -329,6 +332,11 @@ def get_region_species_counts(region_type: RegionType, region: str, min_occurren
     return {str(entry["name"]): int(entry["count"]) for entry in counts}
 
 
+def region_filter_path(region: str, min_occurrence_count: int) -> Path:
+    """Return the path of a region's cached species-list CSV (its JSON record has the same stem)."""
+    return FILTERS_PATH / f"region_filter_{_scope}_{region.upper()}_minocc{min_occurrence_count}.csv"
+
+
 def build_region_filter_csv(
     region_type: RegionType,
     region: str,
@@ -369,7 +377,7 @@ def build_region_filter_csv(
     """
     region = region.upper()
     label = f"{region_type} '{region}'"
-    cache_path = FILTERS_PATH / f"region_filter_{_scope}_{region}_minocc{min_occurrence_count}.csv"
+    cache_path = region_filter_path(region, min_occurrence_count)
     meta_path = cache_path.with_suffix(".json")
     cache_exists = cache_path.exists()
 
@@ -514,3 +522,45 @@ def load_region_species(
     logger.info("Region filter for %s %s: %d unique species across all of them",
                 region_type, ", ".join(regions), len(species))
     return sorted(species)
+
+
+def copy_region_filters(
+    regions: Sequence[str],
+    dest_dir: Path,
+    min_occurrence_count: int = MIN_OCCURRENCE_COUNT,
+) -> list[Path]:
+    """Copy the region filters and the mapping provenance into a run.
+
+    Copies each region's species-list CSV and its JSON record, as used by load_region_species(),
+    plus the species mapping's provenance JSON. The mapping CSV itself is not copied: the
+    provenance identifies it by its checksum (the region JSONs' 'mapping_sha256'). Files that do
+    not exist are skipped.
+
+    Args:
+        regions: ISO 3166-1 alpha-2 country codes or GBIF continents of the applied filter.
+        dest_dir: Destination directory, created if missing (e.g. OutputLayout.filters_dir).
+        min_occurrence_count: Minimum occurrence count the region filters were built with.
+
+    Raises:
+        OSError: If a file cannot be copied.
+
+    Returns:
+        Paths of the copied files.
+    """
+    sources: list[Path] = []
+    for region in regions:
+        csv_path = region_filter_path(region, min_occurrence_count)
+        sources += [csv_path, csv_path.with_suffix(".json")]
+    try:
+        sources.append(ensure_asset(SPECIES_MAPPING_JSON.name, FILTER_ASSETS_JSON))
+    except (OSError, KeyError, ValueError) as e:
+        logger.warning("Could not provide the provenance record of the species mapping: %s", e)
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    copied = []
+    for source in sources:
+        if source.exists():
+            copied.append(Path(shutil.copy2(source, dest_dir / source.name)))
+        else:
+            logger.warning("Filter file '%s' not found, not copied to the run.", source.name)
+    return copied

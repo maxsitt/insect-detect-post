@@ -24,14 +24,14 @@ import polars as pl
 import psutil
 from bioclip import Rank, TreeOfLifeClassifier
 
-from insectdetect_post.build_region_filter import RegionType, load_region_species
+from insectdetect_post.build_region_filter import RegionType, copy_region_filters, load_region_species
 from insectdetect_post.classifier_utils import (
     format_time,
     parse_crop_name,
     save_classification_results,
     validate_metadata,
 )
-from insectdetect_post.constants import RANK_ORDER
+from insectdetect_post.constants import RANK_ORDER, OutputLayout
 
 # Create module-level logger
 logger = logging.getLogger(__name__)
@@ -175,6 +175,14 @@ def classify_imgs_bioclip(
                 *region, progress_callback=region_filter_progress
             )
             region_mask = classifier.create_taxa_filter(Rank.SPECIES, region_species)
+
+            # Keep the applied filter files with the run, for reproducibility
+            filters_dir = OutputLayout(output_dir).filters_dir
+            try:
+                copied = copy_region_filters(region[1], filters_dir)
+                logger.info("Copied %d filter files to '%s'", len(copied), filters_dir)
+            except OSError as e:
+                logger.warning("Could not copy the filter files to '%s': %s", filters_dir, e)
             combined_mask = [t and r for t, r in zip(taxon_mask, region_mask)]
         else:
             combined_mask = taxon_mask

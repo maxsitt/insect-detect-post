@@ -59,6 +59,10 @@ class OutputLayout:
     def validation_dir(self) -> Path:
         return self.root / "validation"
 
+    @property
+    def filters_dir(self) -> Path:
+        return self.root / "filters"
+
     def crop_label_dir(self, label: str) -> Path:
         return self.crops_dir / str(label)
 
