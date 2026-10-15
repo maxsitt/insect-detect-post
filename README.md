@@ -484,5 +484,5 @@ License v3.0 ([GNU AGPLv3](https://choosealicense.com/licenses/agpl-3.0/)).
 If you use resources from this repository, please cite it as:
 
 ``` text
-Sittinger, M. (2026). Software for post-processing of data captured with the Insect Detect camera trap (v1.0.0). Zenodo. https://doi.org/10.5281/zenodo.21822140
+Sittinger, M. (2026). Software for post-processing of data captured with the Insect Detect camera trap (v1.1.0). Zenodo. https://doi.org/10.5281/zenodo.21822140
 ```

@@ -1,6 +1,6 @@
 [project]
 name = "insect-detect-post"
-version = "1.0.0"
+version = "1.1.0"
 description = "Software for post-processing of data captured with the Insect Detect camera trap."
 requires-python = ">=3.13,<3.15"
 license = "AGPL-3.0-or-later"
