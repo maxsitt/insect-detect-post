@@ -8,6 +8,10 @@ Docs:     https://maxsitt.github.io/insect-detect-docs/
 Aggregates image-level predictions into per-track candidates with weighted probabilities,
 applies confidence/duration/probability filters, and writes both outputs to CSV.
 
+BioCLIP predictions at species rank get the accepted GBIF species name and key of each Tree of
+Life species from the species mapping ('gbif_species', 'gbif_species_key'), for joining further
+details from the mapping. The per-image '_classified.csv' stays the raw model output.
+
 Functions:
     process_metadata_classified(): Process classified metadata with filtering and size estimation.
 """
@@ -27,6 +31,38 @@ from insectdetect_post.dataset_harmonizer import parse_timestamp_column
 # Create module-level logger
 logger = logging.getLogger(__name__)
 
+# Columns joined from the species mapping onto BioCLIP species predictions
+GBIF_SPECIES_COLUMNS = ["gbif_species", "gbif_species_key"]
+
+
+def _load_gbif_species(
+    progress_callback: Callable[[int, int, str], None] | None = None
+) -> pl.DataFrame | None:
+    """Return the GBIF species name and key per Tree of Life species, or None if unavailable.
+
+    Only species with a GBIF species key are returned, so both columns stay empty together for
+    a Tree of Life species without one.
+
+    Args:
+        progress_callback: Optional callback(current, total, message) for a first-use download.
+
+    Returns:
+        DataFrame with 'bioclip_species' and GBIF_SPECIES_COLUMNS, or None if the species mapping
+        cannot be loaded (warning logged).
+    """
+    # Imported here, so runs without BioCLIP do not load the GBIF dependencies
+    from insectdetect_post.build_region_filter import load_species_mapping
+
+    try:
+        mapping = load_species_mapping(progress_callback)
+    except (OSError, KeyError, ValueError) as e:
+        logger.warning("Species mapping not available, outputs are written without GBIF columns: %s", e)
+        return None
+    return (
+        mapping.filter(pl.col("gbif_species_key").is_not_null())
+        .select("bioclip_species", *GBIF_SPECIES_COLUMNS)
+    )
+
 
 def process_metadata_classified(
     metadata_path: Path,
@@ -43,8 +79,10 @@ def process_metadata_classified(
 
     Supports both Ultralytics (top1/top2) and BioCLIP (taxonomic hierarchy)
     classification formats. BioCLIP results carry additional taxonomy columns
-    while keeping the standard output shape. All filtering is applied at track
-    level after aggregation.
+    while keeping the standard output shape, at species rank followed by
+    GBIF_SPECIES_COLUMNS from the species mapping (left out if it is not
+    available). All filtering is applied at track level after aggregation.
+    If the mapping is used, its provenance record is copied into the run.
 
     Args:
         metadata_path: Path to classified metadata CSV.
@@ -343,6 +381,20 @@ def process_metadata_classified(
         })
     )
 
+    # Accepted GBIF species of the predicted Tree of Life species, after the taxonomy columns
+    gbif_species = None
+    if "bioclip_species" in bioclip_columns:
+        def mapping_progress(_pct: int, _total: int, message: str) -> None:
+            if progress_callback:
+                progress_callback(92, 100, message)
+
+        gbif_species = _load_gbif_species(mapping_progress)
+    if gbif_species is not None:
+        df_candidates = df_candidates.join(gbif_species, on="bioclip_species", how="left", maintain_order="left")
+        df_final = df_final.join(gbif_species, on="bioclip_species", how="left", maintain_order="left")
+        logger.info("GBIF species key for %d of %d tracks",
+                    df_final["gbif_species_key"].is_not_null().sum(), df_final.height)
+
     if progress_callback:
         progress_callback(95, 100, "Saving results...")
 
@@ -351,6 +403,14 @@ def process_metadata_classified(
     final_path = layout.metadata_dir / f"{metadata_path.stem}_final.csv"
     df_candidates.write_csv(candidates_path)
     df_final.write_csv(final_path)
+
+    if gbif_species is not None:
+        from insectdetect_post.build_region_filter import copy_mapping_provenance
+
+        try:
+            copy_mapping_provenance(layout.filters_dir)
+        except OSError as e:
+            logger.warning("Could not copy the species mapping provenance to '%s': %s", layout.filters_dir, e)
 
     if progress_callback:
         progress_callback(100, 100, "Metadata processing complete")

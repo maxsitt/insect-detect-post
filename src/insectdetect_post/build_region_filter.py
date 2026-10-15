@@ -28,6 +28,7 @@ Functions:
     region_filter_path():              Return the path of a region's cached species-list CSV.
     build_region_filter_csv():         Resolve a species-list CSV for a region from cache or by querying GBIF.
     load_region_species():             Load species with GBIF occurrence records in any of the given regions.
+    copy_mapping_provenance():         Copy the provenance record of the species mapping into a run.
     copy_region_filters():             Copy the region filters and the mapping provenance into a run.
 """
 
@@ -524,6 +525,27 @@ def load_region_species(
     return sorted(species)
 
 
+def copy_mapping_provenance(dest_dir: Path) -> Path | None:
+    """Copy the provenance record of the species mapping into a run.
+
+    Args:
+        dest_dir: Destination directory, created if missing (e.g. OutputLayout.filters_dir).
+
+    Raises:
+        OSError: If the file cannot be copied.
+
+    Returns:
+        Path of the copy, or None if the provenance record is not available (warning logged).
+    """
+    try:
+        source = ensure_asset(SPECIES_MAPPING_JSON.name, FILTER_ASSETS_JSON)
+    except (OSError, KeyError, ValueError) as e:
+        logger.warning("Could not provide the provenance record of the species mapping: %s", e)
+        return None
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    return Path(shutil.copy2(source, dest_dir / source.name))
+
+
 def copy_region_filters(
     regions: Sequence[str],
     dest_dir: Path,
@@ -547,20 +569,15 @@ def copy_region_filters(
     Returns:
         Paths of the copied files.
     """
-    sources: list[Path] = []
-    for region in regions:
-        csv_path = region_filter_path(region, min_occurrence_count)
-        sources += [csv_path, csv_path.with_suffix(".json")]
-    try:
-        sources.append(ensure_asset(SPECIES_MAPPING_JSON.name, FILTER_ASSETS_JSON))
-    except (OSError, KeyError, ValueError) as e:
-        logger.warning("Could not provide the provenance record of the species mapping: %s", e)
-
     dest_dir.mkdir(parents=True, exist_ok=True)
     copied = []
-    for source in sources:
-        if source.exists():
-            copied.append(Path(shutil.copy2(source, dest_dir / source.name)))
-        else:
-            logger.warning("Filter file '%s' not found, not copied to the run.", source.name)
+    for region in regions:
+        csv_path = region_filter_path(region, min_occurrence_count)
+        for source in (csv_path, csv_path.with_suffix(".json")):
+            if source.exists():
+                copied.append(Path(shutil.copy2(source, dest_dir / source.name)))
+            else:
+                logger.warning("Filter file '%s' not found, not copied to the run.", source.name)
+    if (provenance := copy_mapping_provenance(dest_dir)) is not None:
+        copied.append(provenance)
     return copied

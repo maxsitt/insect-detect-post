@@ -285,7 +285,7 @@ Each run creates a timestamped directory under `data_processed/` in your output 
         ├── 2026-08-05_14-30-12_<config>.json  # config snapshot for this run
         ├── 2026-08-05_14-30-12_run.log        # full log output
         ├── 2026-08-05_14-30-12_stats.json     # per-step durations
-        ├── filters/                           # applied BioCLIP region filters + mapping provenance
+        ├── filters/                           # BioCLIP region filters + mapping provenance
         ├── metadata/
         │   ├── <source>_metadata_merged.csv               # all source metadata, harmonized
         │   ├── <source>_metadata_merged_classified.csv    # + per-image predictions
@@ -302,6 +302,13 @@ Each run creates a timestamped directory under `data_processed/` in your output 
 `..._classified_final_validated_<validator>_<started>.csv` for analyzing the corrected data
 after validation. Both have one row per tracking ID including its final prediction and
 weighted probability, the validated file adds the verdicts and determinations.
+
+For BioCLIP predictions at species rank, the candidates and final CSVs also carry
+`gbif_species` and `gbif_species_key`: the accepted GBIF species (Catalogue of Life) of the
+predicted Tree of Life species, empty if it has none. Further details such as the GBIF
+lineage or IUCN category can be joined from the species mapping
+(`filters/bioclip_gbif_species_mapping_*.csv`) on `gbif_species_key`, whose provenance record
+is copied into the run's `filters/` folder.
 
 ---
 
