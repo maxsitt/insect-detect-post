@@ -12,7 +12,9 @@ the draw depends only on the seed and the track keys, not on library versions or
 
 Functions:
     filter_taxa(): Keep tracks of selected predicted taxa.
+    filter_periods(): Keep tracks that started in selected periods.
     filter_settings(): Keep tracks of selected camera settings.
+    period_counts(): Track counts per period of the start time.
     setting_counts(): Track counts per camera setting.
     setting_strata_available(): Whether a run has at least two setting groups.
     available_strata_ranks(): Ranks offered as taxon strata.
@@ -49,6 +51,9 @@ STRATUM_ALL = "all"
 # Stratum value of tracks without a taxon / probability / setting
 NONE_LABEL = "(none)"
 
+# Characters of an ISO start time that name its period ('2026', '2026-07', '2026-07-15')
+_PERIOD_LENGTHS = {"year": 4, "month": 7, "day": 10}
+
 # Separator of the hashed fields of a random key (unit separator, not part of any id)
 _KEY_SEPARATOR = "\x1f"
 
@@ -63,11 +68,33 @@ def filter_taxa(tracks: pl.DataFrame, rank: str | None, names: list[str] | None)
     return tracks.filter(pl.col(col).is_in(names))
 
 
+def filter_periods(tracks: pl.DataFrame, granularity: str | None, periods: list[str] | None) -> pl.DataFrame:
+    """Keep tracks whose start period at 'granularity' is one of 'periods' (NONE_LABEL: without a start time)."""
+    if not granularity or not periods or "start_time" not in tracks.columns:
+        return tracks
+    return tracks.filter(_period(granularity).is_in(periods))
+
+
 def filter_settings(tracks: pl.DataFrame, settings: list[str] | None) -> pl.DataFrame:
     """Keep tracks whose setting is one of 'settings' (NONE_LABEL: without one)."""
     if not settings or SETTING_COLUMN not in tracks.columns:
         return tracks
     return tracks.filter(pl.col(SETTING_COLUMN).fill_null(NONE_LABEL).is_in(settings))
+
+
+def period_counts(tracks: pl.DataFrame, granularity: str) -> pl.DataFrame:
+    """Return the track counts per period of the start time, tracks without one grouped as NONE_LABEL.
+
+    Returns:
+        Frame with 'period, n_tracks' in time order, NONE_LABEL last. Empty without a 'start_time' column.
+    """
+    if "start_time" not in tracks.columns:
+        return pl.DataFrame(schema={"period": pl.String, "n_tracks": pl.UInt32})
+    return (
+        tracks.group_by(_period(granularity).alias("period"))
+        .len().rename({"len": "n_tracks"})
+        .sort([pl.col("period") == NONE_LABEL, pl.col("period")])
+    )
 
 
 def setting_counts(tracks: pl.DataFrame) -> pl.DataFrame:
@@ -230,6 +257,11 @@ def sample_strata(tracks_with_strata: pl.DataFrame, max_per_stratum: int | None,
         .drop("_order")
         .with_row_index("sample_order")
     )
+
+
+def _period(granularity: str) -> pl.Expr:
+    """Return the period of the track start at 'granularity' (NONE_LABEL without a start time)."""
+    return pl.col("start_time").cast(pl.String).str.slice(0, _PERIOD_LENGTHS[granularity]).fill_null(NONE_LABEL)
 
 
 def _random_keys(tracks: pl.DataFrame, seed: int, purpose: str) -> pl.Series:

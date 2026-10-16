@@ -55,6 +55,7 @@ from insectdetect_post.validation_run import TrackKey, ValidationRun
 from insectdetect_post.validation_sampling import (
     STRATUM_COLUMNS,
     assign_strata,
+    filter_periods,
     filter_settings,
     filter_taxa,
     small_strata,
@@ -174,6 +175,8 @@ class SamplingConfig:
     """Parameters of the validated subsample (stored in the session JSON)."""
     taxon_filter_rank: str | None = None
     taxon_filter_values: list[str] = field(default_factory=list)
+    period_filter_granularity: str | None = None
+    period_filter_values: list[str] = field(default_factory=list)
     setting_filter_values: list[str] = field(default_factory=list)
     stratum_rank: str | None = None
     prob_edges: list[float] | None = None
@@ -190,6 +193,12 @@ class SamplingConfig:
     def from_dict(cls, data: dict[str, Any]) -> SamplingConfig:
         """Create the config from its dict (see to_dict())."""
         return cls(**data)
+
+    def select_tracks(self, tracks: pl.DataFrame) -> pl.DataFrame:
+        """Return the tracks selected by the taxa, period and setting filters."""
+        tracks = filter_taxa(tracks, self.taxon_filter_rank, self.taxon_filter_values or None)
+        tracks = filter_periods(tracks, self.period_filter_granularity, self.period_filter_values or None)
+        return filter_settings(tracks, self.setting_filter_values or None)
 
 
 @dataclass
@@ -509,9 +518,7 @@ class ValidationSession:
             .sort("stratum_id").to_dicts()
         )
         # Selected tracks and the strata the minimum excluded from the sample (see sample_strata())
-        selected = filter_settings(
-            filter_taxa(run.tracks, sampling.taxon_filter_rank, sampling.taxon_filter_values or None),
-            sampling.setting_filter_values or None)
+        selected = sampling.select_tracks(run.tracks)
         summary = stratum_summary(assign_strata(selected, sampling.stratum_rank, sampling.prob_edges,
                                                 by_setting=sampling.stratum_setting))
         excluded = summary.filter(pl.col("stratum_id").is_in(small_strata(summary, sampling.min_per_stratum)))

@@ -158,9 +158,11 @@ from insectdetect_post.validation_sampling import (
     NONE_LABEL,
     assign_strata,
     available_strata_ranks,
+    filter_periods,
     filter_settings,
     filter_taxa,
     parse_prob_edges,
+    period_counts,
     sample_strata,
     setting_counts,
     setting_strata_available,
@@ -749,6 +751,21 @@ class SetupPage(QWidget):
         taxa_check = self.filter_form.widgets()["taxa_rank_enabled"]
         self.taxa_values_param.setEnabled(taxa_check.value())
         taxa_check.value_changed.connect(self.taxa_values_param.setEnabled)
+        self.period_granularity_param = ComboParameter("period_granularity")
+        self.period_granularity_param.set_label("Filter periods by")
+        self.period_granularity_param.set_items([("Year", "year"), ("Month", "month"), ("Day", "day")])
+        self.period_granularity_param.setToolTip("Only validate tracks that started in one of the periods "
+                                                 "selected below")
+        self.filter_form.add_parameter(self.period_granularity_param, checkable=True)
+        self.period_values_param = MultiComboParameter[str]("period_values")
+        self.period_values_param.combo.set_maximum_display_items(0)  # show every selected entry
+        self.period_values_param.set_label("Periods")
+        self.period_values_param.set_placeholder("Select periods...")
+        self.filter_form.add_parameter(self.period_values_param)
+        self.period_filter_check = self.filter_form.widgets()["period_granularity_enabled"]
+        self.period_filter_check.setToolTip(self.period_granularity_param.toolTip())
+        self.period_values_param.setEnabled(self.period_filter_check.value())
+        self.period_filter_check.value_changed.connect(self.period_values_param.setEnabled)
         self.settings_values_param = MultiComboParameter[str]("setting_values")
         self.settings_values_param.combo.set_maximum_display_items(0)  # show every selected entry
         self.settings_values_param.set_label("Filter camera settings")
@@ -877,8 +894,9 @@ class SetupPage(QWidget):
         self.validator_param.text.textChanged.connect(lambda _: self._update_start_state())
         self.filter_form.parameter_changed.connect(lambda _: self._preview_timer.start())
         self.sampling_form.parameter_changed.connect(lambda _: self._preview_timer.start())
-        # The counts of each filter list follow the other filter
+        # The counts of each filter list follow the other filters
         for widget in (self.taxa_rank_param, self.taxa_values_param, self.filter_form.widgets()["taxa_rank_enabled"],
+                       self.period_granularity_param, self.period_values_param, self.period_filter_check,
                        self.settings_values_param, self.settings_filter_check):
             widget.value_changed.connect(lambda _: self._refresh_filter_lists())
         self._set_options_enabled(False)
@@ -1042,7 +1060,7 @@ class SetupPage(QWidget):
             f"Predicted taxa: {taxa or '-'}",
             f"Weighted probability: {prob_text}",
             filter_text,
-            f"Camera settings: {self._settings_text() or 'none recorded'}",
+            f"Camera settings: {self._settings_text(self._setting_counts) or 'none recorded'}",
         ]))
         if self.taxonomy.uses_species_mapping:
             self.taxonomy_label.setText(
@@ -1092,9 +1110,10 @@ class SetupPage(QWidget):
             conditions.append(f"weighted probability ≥ {filters['min_prob_weighted']:g}")
         return conditions
 
-    def _settings_text(self, limit: int = 8) -> str:
-        """Return the camera settings with their track counts (empty if none)."""
-        rows = self._setting_counts.to_dicts()
+    @staticmethod
+    def _settings_text(counts: pl.DataFrame, limit: int = 8) -> str:
+        """Return the camera settings of 'counts' (see setting_counts()) with their track counts (empty if none)."""
+        rows = counts.to_dicts()
         listed = " · ".join(f"{row[SETTING_COLUMN]} ({row['n_tracks']})" for row in rows[:limit])
         return listed + (f" · +{len(rows) - limit} more" if len(rows) > limit else "")
 
@@ -1156,16 +1175,21 @@ class SetupPage(QWidget):
             return
         sampling = SamplingConfig.from_dict(info["sampling"])
         self._updating = True
+        self.taxa_rank_param.set_value(sampling.taxon_filter_rank or self.taxa_rank_param.value())
+        self.period_granularity_param.set_value(sampling.period_filter_granularity
+                                                or self.period_granularity_param.value())
         self.settings_filter_check.set_value(bool(sampling.setting_filter_values)
                                              and self.settings_filter_check.isEnabled())
         self.settings_values_param.set_value(list(sampling.setting_filter_values))
-        self.taxa_rank_param.set_value(sampling.taxon_filter_rank or self.taxa_rank_param.value())
         self._updating = False
-        self._refresh_filter_lists()  # list the session's taxa before checking them
+        self._refresh_filter_lists()  # list the session's taxa and periods before checking them
         self._updating = True
         filter_params, sampling_params = self.filter_form.widgets(), self.sampling_form.widgets()
         filter_params["taxa_rank_enabled"].set_value(bool(sampling.taxon_filter_rank))
         self.taxa_values_param.set_value(list(sampling.taxon_filter_values))
+        self.period_filter_check.set_value(bool(sampling.period_filter_granularity)
+                                           and self.period_filter_check.isEnabled())
+        self.period_values_param.set_value(list(sampling.period_filter_values))
         sampling_params["stratum_rank_enabled"].set_value(bool(sampling.stratum_rank))
         if sampling.stratum_rank:
             self.stratum_rank_param.set_value(sampling.stratum_rank)
@@ -1271,12 +1295,22 @@ class SetupPage(QWidget):
             "only one camera setting in this run" if n_settings else "no camera setting recorded in this run")
         self.setting_check.set_value(False)
         self._sync_setting_strata()
+        # Period filter: needs tracks of at least two days
+        days = period_counts(self.run.tracks, "day")
+        periods_available = days.filter(pl.col("period") != NONE_LABEL).height >= 2
+        self.period_filter_check.set_value(False)
+        self.period_filter_check.setEnabled(periods_available)
+        self.period_granularity_param.set_value("month")
+        self.period_values_param.set_value([])
+        self.period_values_param.set_placeholder(
+            "Select periods..." if periods_available else
+            "all tracks started on one day" if days.height else "no track start times in this run")
         self.preview_table.setColumnHidden(0, not settings_available)
         self._updating = False
         self._refresh_filter_lists()
 
     def _refresh_filter_lists(self) -> None:
-        """Recount the taxa and setting lists, each for the tracks the other filter selects.
+        """Recount the taxa, period and setting lists, each for the tracks the other two filters select.
 
         Every entry stays listed (possibly with 0), so checked entries survive.
         """
@@ -1284,20 +1318,30 @@ class SetupPage(QWidget):
             return
         self._updating = True  # no re-entry from the lists' own signals
         try:
-            self._sync_setting_strata()
-            n_setting = dict(setting_counts(filter_taxa(self.run.tracks, *self._taxa_filter())).iter_rows())
+            by_taxa = filter_taxa(self.run.tracks, *self._taxa_filter())
+            period_filter = self._period_filter()
+            selected_settings = self._setting_filter() or None
+            rank = self.taxa_rank_param.value()
+            counts = self.run.taxon_counts(rank) if rank else None
+            if not rank or counts is None or counts.is_empty():
+                self.taxa_values_param.set_items([])
+            else:
+                selected = filter_settings(filter_periods(self.run.tracks, *period_filter), selected_settings)
+                n_taxon = dict(self.run.taxon_counts(rank, selected).iter_rows())
+                taxa = sorted(counts["taxon"].to_list(), key=lambda taxon: (-n_taxon.get(taxon, 0), taxon))
+                self.taxa_values_param.set_items({f"{taxon} ({n_taxon.get(taxon, 0)})": taxon for taxon in taxa})
+            # Periods in time order
+            granularity = self.period_granularity_param.value()
+            assert granularity is not None  # fixed items, one always selected
+            n_period = dict(period_counts(filter_settings(by_taxa, selected_settings), granularity).iter_rows())
+            periods = period_counts(self.run.tracks, granularity)["period"].to_list()
+            self.period_values_param.set_items({f"{p} ({n_period.get(p, 0)})": p for p in periods})
+            n_setting = dict(setting_counts(filter_periods(by_taxa, *period_filter)).iter_rows())
             settings = sorted(self._setting_counts[SETTING_COLUMN].to_list(),
                               key=lambda setting: (-n_setting.get(setting, 0), setting))
             self.settings_values_param.set_items({f"{s} ({n_setting.get(s, 0)})": s for s in settings})
-            rank = self.taxa_rank_param.value()
-            counts = self.run.taxon_counts(rank) if rank else None
-            if counts is None or counts.is_empty():
-                self.taxa_values_param.set_items([])
-            else:
-                selected = self.run.taxon_counts(rank, filter_settings(self.run.tracks, self._setting_filter()))
-                n_taxon = dict(selected.iter_rows())
-                taxa = sorted(counts["taxon"].to_list(), key=lambda taxon: (-n_taxon.get(taxon, 0), taxon))
-                self.taxa_values_param.set_items({f"{taxon} ({n_taxon.get(taxon, 0)})": taxon for taxon in taxa})
+            # After the lists: a granularity change drops the periods selected before
+            self._sync_setting_strata()
         finally:
             self._updating = False
         self._update_preview()
@@ -1308,22 +1352,29 @@ class SetupPage(QWidget):
             return None, None
         return self.taxa_rank_param.value(), list(self.taxa_values_param.value()) or None
 
+    def _period_filter(self) -> tuple[str | None, list[str] | None]:
+        """Return '(granularity, periods)' of the period filter, '(None, None)' if off."""
+        if not self.period_filter_check.value():
+            return None, None
+        return self.period_granularity_param.value(), list(self.period_values_param.value()) or None
+
     def _setting_filter(self) -> list[str]:
         """Return the selected camera settings (empty if the filter is off)."""
         return list(self.settings_values_param.value()) if self.settings_filter_check.value() else []
 
     def _sync_setting_strata(self) -> None:
-        """Offer setting strata only while the selected settings form at least two groups."""
+        """Offer setting strata only while the selected tracks fall into at least two setting groups."""
         assert self.run is not None
-        available = setting_strata_available(filter_settings(self.run.tracks, self._setting_filter()))
+        selected = filter_periods(filter_taxa(self.run.tracks, *self._taxa_filter()), *self._period_filter())
+        counts = setting_counts(filter_settings(selected, self._setting_filter() or None))
+        available = counts.height >= 2
         self.setting_check.setEnabled(available)
         if not available and self.setting_check.value():
             self.setting_check.set_value(False)
         n_settings = self._setting_counts.height
         self.setting_param.set_value(
-            self._settings_text() if available and not self._setting_filter() else
-            " · ".join(self._setting_filter()) if available else
-            "only one camera setting selected" if n_settings >= 2 else
+            self._settings_text(counts) if available else
+            "only one camera setting among the selected tracks" if n_settings >= 2 else
             "only one camera setting in this run" if n_settings else "no camera setting recorded in this run"
         )
 
@@ -1334,6 +1385,9 @@ class SetupPage(QWidget):
         if values.get("taxa_rank_enabled"):
             cfg.taxon_filter_rank = values.get("taxa_rank")
             cfg.taxon_filter_values = list(values.get("taxa_values") or ())
+        if values.get("period_granularity_enabled"):
+            cfg.period_filter_granularity = values.get("period_granularity")
+            cfg.period_filter_values = list(values.get("period_values") or ())
         if values.get("setting_values_enabled"):
             cfg.setting_filter_values = list(values.get("setting_values") or ())
         if values.get("stratum_rank_enabled"):
@@ -1354,9 +1408,8 @@ class SetupPage(QWidget):
     def _sample(self, cfg: SamplingConfig) -> tuple[pl.DataFrame, pl.DataFrame]:
         """Return '(sampled tracks, stratum summary)' of a sampling config."""
         assert self.run is not None
-        tracks = filter_taxa(self.run.tracks, cfg.taxon_filter_rank, cfg.taxon_filter_values or None)
-        tracks = filter_settings(tracks, cfg.setting_filter_values or None)
-        with_strata = assign_strata(tracks, cfg.stratum_rank, cfg.prob_edges, by_setting=cfg.stratum_setting)
+        with_strata = assign_strata(cfg.select_tracks(self.run.tracks), cfg.stratum_rank, cfg.prob_edges,
+                                    by_setting=cfg.stratum_setting)
         summary = stratum_summary(with_strata)
         sampled = sample_strata(with_strata, cfg.max_per_stratum, cfg.seed, cfg.min_per_stratum)
         return sampled, summary
@@ -4819,13 +4872,16 @@ def _error_color() -> str:
 
 
 def _fmt_selection(sampling: dict[str, Any], full: bool = False) -> str:
-    """Return the track selection of a session (taxa and setting filters)."""
+    """Return the track selection of a session (taxa, period and setting filters)."""
     def listed(values: Sequence[str]) -> str:
         return ", ".join(values) if full or len(values) <= 4 else f"{', '.join(values[:4])}, +{len(values) - 4} more"
 
     rank, taxa = sampling["taxon_filter_rank"], sampling["taxon_filter_values"]
+    granularity, periods = sampling["period_filter_granularity"], sampling["period_filter_values"]
     settings = sampling["setting_filter_values"]
     parts = [f"{rank}: {listed(taxa)}"] if rank and taxa else []
+    if granularity and periods:
+        parts.append(f"{granularity}: {listed(periods)}")
     if settings:
         parts.append(f"settings: {listed(settings)}")
     return "; ".join(parts) or "all tracks of the run"
