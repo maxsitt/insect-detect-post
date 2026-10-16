@@ -10,6 +10,11 @@ A session is stored in the run's 'validation/' directory as '<validator>_<sessio
 (one row per sampled track) and '<validator>_<session_id>_validation.json' (sampling, provenance, UI state),
 both rewritten atomically on every save. The session ID is the creation time.
 
+Fields added later to the session files get a default when an older session is read (sampling fields
+from SamplingConfig, top-level JSON keys from _META_DEFAULTS, verdict columns stay empty), so the
+default must reproduce how sessions behaved before the field existed. Fields unknown to this version
+(a session of a newer version) are refused, as the next save would drop them.
+
 Classes:
     SamplingConfig: Parameters that define the validated subsample.
     Verdict: Human verdict of one track.
@@ -32,6 +37,7 @@ Functions:
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -128,7 +134,7 @@ _VERDICT_COLUMNS = [
 # Model columns copied into the session CSV
 _MODEL_COLUMNS = ["model_rank", "pred", "pred_prob_weighted", *[f"pred_{r}" for r in _RANKS_CSV]]
 
-# Keys of the session JSON (written by ValidationSession.create())
+# Required keys of the session JSON (written by ValidationSession.create())
 _META_KEYS = frozenset({
     "validator", "session_id", "created", "updated", "app_version", "blind",
     "run_name", "run_root", "final_csv", "taxonomy", "model_rank", "n_tracks_classified", "run_filters",
@@ -136,6 +142,9 @@ _META_KEYS = frozenset({
     "n_validated",
     "custom_taxa", "ui",
 })
+
+# Keys added to the session JSON later, with the value that reproduces older sessions (not in _META_KEYS)
+_META_DEFAULTS: dict[str, Any] = {}
 
 # Separator of the track IDs in a 'same_individual_as' value
 _LINK_SEPARATOR = ";"
@@ -172,7 +181,10 @@ def new_session_id(run_root: Path, validator: str, now: datetime | None = None) 
 
 @dataclass
 class SamplingConfig:
-    """Parameters of the validated subsample (stored in the session JSON)."""
+    """Parameters of the validated subsample (stored in the session JSON).
+
+    A field added later needs a default that reproduces the sampling of older sessions.
+    """
     taxon_filter_rank: str | None = None
     taxon_filter_values: list[str] = field(default_factory=list)
     period_filter_granularity: str | None = None
@@ -550,6 +562,7 @@ class ValidationSession:
             # State
             "custom_taxa": [],
             "ui": {},
+            **copy.deepcopy(_META_DEFAULTS),
         }
         session = cls(run.root, validator, base, meta)
         session.unsaved = True
@@ -572,9 +585,12 @@ class ValidationSession:
 
         df = pl.read_csv(csv_path, infer_schema_length=0)
         base_cols = [*TRACK_KEY_COLUMNS, *STRATUM_COLUMNS, "stratum_n_population", "sample_order", *_MODEL_COLUMNS]
-        missing = [c for c in [*base_cols, *_VERDICT_COLUMNS] if c not in df.columns]
+        missing = [c for c in base_cols if c not in df.columns]
         if missing:
             raise ValueError(f"Session CSV '{csv_path.name}' lacks columns: {missing}")
+        if unknown := [c for c in df.columns if c not in base_cols and c not in _VERDICT_COLUMNS]:
+            raise ValueError(_newer_version_message(csv_path.name, "columns", unknown, meta))
+        df = df.with_columns(pl.lit(None, dtype=pl.String).alias(c) for c in _VERDICT_COLUMNS if c not in df.columns)
         df = df.with_columns(
             pl.col("stratum_n_population").cast(pl.Int64, strict=False),
             pl.col("sample_order").cast(pl.Int64, strict=False),
@@ -1103,20 +1119,33 @@ def individual_groups(frame: pl.DataFrame) -> pl.DataFrame:
 def _read_meta(json_path: Path) -> dict[str, Any]:
     """Read a validation session JSON.
 
+    Keys and sampling fields added after the session was created get their defaults.
+
     Raises:
-        ValueError: If it is missing or unreadable, or lacks keys of the session JSON (see _META_KEYS).
+        ValueError: If it is missing or unreadable, lacks required keys (see _META_KEYS) or has sampling
+            fields unknown to this version.
     """
     try:
         meta = json.loads(json_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         raise ValueError(f"Session metadata '{json_path.name}' is missing or unreadable.") from e
     missing = sorted(_META_KEYS - meta.keys()) if isinstance(meta, dict) else sorted(_META_KEYS)
-    sampling = meta.get("sampling") if isinstance(meta, dict) else None
-    if isinstance(sampling, dict) and set(sampling) != set(SamplingConfig.__dataclass_fields__):
+    if not missing and not isinstance(meta["sampling"], dict):
         missing.append("sampling fields")
     if missing:
         raise ValueError(f"Session metadata '{json_path.name}' is incomplete (missing: {', '.join(missing)}).")
+    if unknown := sorted(set(meta["sampling"]) - set(SamplingConfig.__dataclass_fields__)):
+        raise ValueError(_newer_version_message(json_path.name, "sampling fields", unknown, meta))
+    for key, default in _META_DEFAULTS.items():
+        meta.setdefault(key, copy.deepcopy(default))
+    meta["sampling"] = SamplingConfig.from_dict(meta["sampling"]).to_dict()
     return meta
+
+
+def _newer_version_message(file_name: str, kind: str, unknown: list[str], meta: dict[str, Any]) -> str:
+    """Return the error message for a session file with fields of a newer version."""
+    return (f"Session file '{file_name}' has {kind} unknown to this version ({', '.join(unknown)}): it was "
+            f"probably saved by a newer version (created with {meta.get('app_version', 'unknown')}).")
 
 
 def _track_id_order(track_id: str) -> tuple[int, int | str]:
