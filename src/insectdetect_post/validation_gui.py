@@ -338,6 +338,9 @@ _COMPARE_SAME_TAXON_MAX = 10
 # Delay before a changed verdict is written to disk
 _AUTOSAVE_DELAY_MS = 500
 
+# Default display duration (ms) for an action message
+_MESSAGE_DURATION_MS_DEFAULT = 6000
+
 # Delay of the auto-advance after a one-click verdict, so the verdict is seen
 _AUTO_ADVANCE_DELAY_MS = 120
 
@@ -2930,6 +2933,9 @@ class ValidationPage(QWidget):
         self._save_timer.setSingleShot(True)
         self._save_timer.setInterval(_AUTOSAVE_DELAY_MS)
         self._save_timer.timeout.connect(self.save_now)
+        self._message_timer = QTimer(self)
+        self._message_timer.setSingleShot(True)
+        self._shown_relinked: dict[TrackKey, list[str]] = {}  # see _relink_around(), for a following batch message
         self._syncing_list = False
         self._shown_at: float | None = None
         self._play_timer = QTimer(self)
@@ -3180,6 +3186,11 @@ class ValidationPage(QWidget):
         self.save_label = QLabel("")
         self.save_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         right_layout.addWidget(self.save_label)
+        self.message_label = QLabel("")
+        self.message_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.message_label.setWordWrap(True)
+        self._message_timer.timeout.connect(self.message_label.clear)
+        right_layout.addWidget(self.message_label)
         right_layout.addStretch(1)
         right_scroll.setWidget(right)
         right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -3243,6 +3254,8 @@ class ValidationPage(QWidget):
         self.run = run
         self.session = session
         self.taxonomy = taxonomy
+        self.save_label.clear()
+        self._show_message("")
         self.verdict_panel.set_taxonomy(taxonomy)
         self.verdict_panel.set_blind(session.blind)
         self.track_model.set_blind(session.blind, apply=False)
@@ -3326,6 +3339,18 @@ class ValidationPage(QWidget):
             logger.exception("Saving the validation session failed")
             self.save_label.setText(f"<span style='color:{_error_color()}'>Save failed: {e}</span>")
 
+    def _show_message(self, text: str, duration_ms: int = _MESSAGE_DURATION_MS_DEFAULT) -> None:
+        """Show an action message below the save state, replacing the previous one.
+
+        Args:
+            text: The message; empty clears the line.
+            duration_ms: Time until the message is cleared; 0 keeps it until the next message.
+        """
+        self._message_timer.stop()
+        self.message_label.setText(text)
+        if text and duration_ms > 0:
+            self._message_timer.start(duration_ms)
+
     @Slot(object)
     def forget_session(self, csv_path: Path) -> None:
         """Close the session of 'csv_path' if it is loaded (before deletion)."""
@@ -3334,6 +3359,7 @@ class ValidationPage(QWidget):
             self._close_session_log()
             self.session = None
             self.save_label.setText("Session deleted")
+            self._show_message("")
 
     def _update_progress(self) -> None:
         """Update the progress bar and the verdict summary of the top bar."""
@@ -4004,8 +4030,9 @@ class ValidationPage(QWidget):
                 self.session.reset(self._current)  # verdict withdrawn, only notes/flags remain
             self.session.set_pending(self._current, verdict)
         relinked = self._relink_around(self._current)
-        if relinked:
-            self.save_label.setText(f"Relinked {', '.join(relinked)}")
+        self._shown_relinked = relinked
+        if notes := self._relink_notes(relinked):
+            self._show_message(f"Relinked {notes}", 12000)
         self._refresh_individual(self._current, linked_before)
         self._link_candidates, self._link_group = self._link_context(self._current)
         self.verdict_panel.set_link_context(self._link_candidates, self._link_group,
@@ -4045,14 +4072,20 @@ class ValidationPage(QWidget):
         targets = keys if len(keys) > 1 and self._current in keys else [self._current]
         if len(targets) > 1 and not self._confirm_batch(len(targets), "reset"):
             return
+        changed = 0
         for key in targets:
+            if self.session.verdict(key) is None:
+                continue
             linked_before = self.session.group_of(key)
             self.session.reset(key)
+            changed += 1
             self._refresh_individual(key, linked_before)
         self._refresh_shown_track()
         self._sync_batch()
         self._update_progress()
         self._save_timer.start()
+        if len(targets) > 1:
+            self._show_message(f"Reset {changed} tracks")
 
     def _refresh_shown_track(self) -> None:
         """Reload the form, links and comparison strip of the shown track after a change to the selection.
@@ -4117,6 +4150,7 @@ class ValidationPage(QWidget):
 
     def _on_batch_action(self, action: str, payload: Any) -> None:
         """Apply a one-click action of the verdict form to the other selected tracks."""
+        relinked, self._shown_relinked = self._shown_relinked, {}  # the shown track was changed just before
         targets = self._batch_targets()
         if not targets or self.session is None:
             return
@@ -4125,12 +4159,13 @@ class ValidationPage(QWidget):
             return
         if not self._confirm_batch(len(targets), action.replace("_", " "), others=True):
             return
-        relinked: list[str] = []
+        changed = 1  # the shown track
         for key in targets:
             existing = self.session.verdict(key)
             verdict = self.verdict_panel.batch_verdict(action, payload, self.session.model_lineage(key), existing)
             if verdict is None:
                 continue
+            changed += 1
             linked_before = self.session.group_of(key)  # a false positive leaves its individual
             if verdict.validated:
                 self.session.set_verdict(key, verdict)
@@ -4138,15 +4173,17 @@ class ValidationPage(QWidget):
                 if existing is not None and existing.validated:
                     self.session.reset(key)
                 self.session.set_pending(key, verdict)
-            relinked += self._relink_around(key)
+            for later, before in self._relink_around(key).items():
+                relinked.setdefault(later, before)
             self._refresh_individual(key, linked_before)
         if relinked:
             self._refresh_shown_track()
         self._sync_batch()
         self._update_progress()
         self._save_timer.start()
-        self.save_label.setText(f"Applied to {len(targets) + 1} tracks"
-                                + (f" · relinked {', '.join(relinked)}" if relinked else ""))
+        notes = self._relink_notes(relinked)
+        self._show_message(f"Applied to {changed} tracks" + (f" · relinked {notes}" if notes else ""),
+                           12000 if notes else _MESSAGE_DURATION_MS_DEFAULT)
 
     def _batch_link(self, keys: list[TrackKey], link: bool) -> None:
         """Link the selected tracks as one individual per device/session, or remove their links."""
@@ -4165,11 +4202,13 @@ class ValidationPage(QWidget):
                 links[later] = with_link(links[later], earlier[2], True)
         else:
             links = {key: None for key in keys if not self._link_excluded(key) and session.predecessors_of(key)}
-        changed = 0
+        changed: set[TrackKey] = set()
         for key, value in links.items():
             existing = session.verdict(key)
             if existing is not None and existing.same_individual_as == value:
                 continue
+            before = parse_links(existing.same_individual_as) if existing is not None else []
+            changed.update([key, *((key[0], key[1], tid) for tid in set(before) ^ set(parse_links(value)))])
             linked_before = session.group_of(key)
             base = existing.copy() if existing is not None else Verdict(validated=False)
             base.same_individual_as = value
@@ -4177,13 +4216,12 @@ class ValidationPage(QWidget):
                 session.set_verdict(key, base)
             else:
                 session.set_pending(key, base)
-            changed += 1
             self._refresh_individual(key, linked_before)
         self._refresh_shown_track()
         self._sync_batch()
         self._update_progress()
         self._save_timer.start()
-        self.save_label.setText(f"{'Linked' if link else 'Unlinked'} {changed} tracks")
+        self._show_message(f"{'Linked' if link else 'Unlinked'} {len(changed)} tracks")
 
     def _batch_link_pairs(self, keys: list[TrackKey]) -> list[tuple[TrackKey, TrackKey]]:
         """Return the '(later, earlier)' links of a batch: consecutive selected tracks of a device/session in time
@@ -4224,20 +4262,42 @@ class ValidationPage(QWidget):
         entry = self.session.verdict(key) if self.session is not None else None
         return entry is not None and entry.false_positive
 
-    def _relink_around(self, key: TrackKey) -> list[str]:
+    def _relink_around(self, key: TrackKey) -> dict[TrackKey, list[str]]:
         """Move the links to a false positive onto its earlier tracks (see ValidationSession.relink_around()).
 
         Returns:
-            Notes 'ID 12 → ID 10' (or 'ID 12 unlinked from ID 11') of the changed tracks.
+            The earlier track IDs each changed track linked to before, for _relink_notes().
         """
         if self.session is None:
-            return []
-        linked_before = self.session.group_of(key)
-        relinked = self.session.relink_around(key)
+            return {}
+        session = self.session
+        before = {(key[0], key[1], tid): session.predecessors_of((key[0], key[1], tid))
+                  for tid in session.successors_of(key)}
+        linked_before = session.group_of(key)
+        relinked = session.relink_around(key)
         for later, _earlier in relinked:
             self._refresh_individual(later, linked_before)
-        return [f"ID {later[2]} → " + ", ".join(f"ID {e[2]}" for e in earlier) if earlier
-                else f"ID {later[2]} unlinked from ID {key[2]}" for later, earlier in relinked]
+        return {later: before[later] for later, _earlier in relinked}
+
+    def _relink_notes(self, relinked: dict[TrackKey, list[str]]) -> str:
+        """Return the notes 'ID 12 → ID 10' (or 'ID 12 unlinked from ID 11') of the relinked tracks.
+
+        A note compares a track's links before the action with its links now, so a batch that relinks a track twice
+        reports only the result. Tracks that are false positives now or kept their links are left out.
+        """
+        if self.session is None:
+            return ""
+        notes = []
+        for later, before in relinked.items():
+            entry = self.session.verdict(later)
+            if entry is not None and entry.false_positive:
+                continue
+            now = parse_links(entry.same_individual_as) if entry is not None else []
+            if now == before:
+                continue
+            notes.append(f"ID {later[2]} → " + ", ".join(f"ID {tid}" for tid in now) if now
+                         else f"ID {later[2]} unlinked from " + ", ".join(f"ID {tid}" for tid in before))
+        return ", ".join(notes)
 
     def _apply_determination_to_selection(self) -> None:
         """Copy the shown track's determination to the other selected tracks."""
@@ -4252,26 +4312,32 @@ class ValidationPage(QWidget):
         if not self._confirm_batch(len(targets), "copy determination"):
             return
         confirmed = not current.validated
+        self._shown_relinked = {}
         if confirmed:
             current = self.verdict_panel.confirm_current()
-        relinked: list[str] = []
+        relinked, self._shown_relinked = self._shown_relinked, {}
+        changed = 0
         for key in targets:
             verdict = self.verdict_panel.batch_verdict("apply_determination", current, self.session.model_lineage(key),
                                                        self.session.verdict(key))
             if verdict is None:
                 continue
+            changed += 1
             linked_before = self.session.group_of(key)  # a copied false positive leaves its individual
             self.session.set_verdict(key, verdict)
-            relinked += self._relink_around(key)
+            for later, before in self._relink_around(key).items():
+                relinked.setdefault(later, before)
             self._refresh_individual(key, linked_before)
         if relinked:
             self._refresh_shown_track()
         self._sync_batch()
         self._update_progress()
         self._save_timer.start()
-        self.save_label.setText(f"Determination copied to {len(targets)} tracks"
-                                + (" (shown track confirmed)" if confirmed else "")
-                                + (f" · relinked {', '.join(relinked)}" if relinked else ""))
+        notes = self._relink_notes(relinked)
+        self._show_message(f"Determination copied to {changed} tracks"
+                           + (" (shown track confirmed)" if confirmed else "")
+                           + (f" · relinked {notes}" if notes else ""),
+                           12000 if notes else _MESSAGE_DURATION_MS_DEFAULT)
 
     def _step(self, delta: int) -> None:
         """Show the next or previous track of the list."""
@@ -4300,7 +4366,7 @@ class ValidationPage(QWidget):
             if verdict is None or not verdict.validated:
                 self._show_track(key)
                 return
-        self.save_label.setText("All tracks validated ✓")
+        self._show_message("All tracks validated ✓", 0)
 
     def _on_return_key(self) -> None:
         """Commit a changed entry on Enter, else go to the next track."""
