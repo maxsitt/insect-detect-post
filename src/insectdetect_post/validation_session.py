@@ -57,7 +57,7 @@ from insectdetect_post.constants import (
     VALIDATION_SEED_DEFAULT,
     OutputLayout,
 )
-from insectdetect_post.validation_run import TrackKey, ValidationRun
+from insectdetect_post.validation_run import TrackKey, ValidationRun, track_id_order
 from insectdetect_post.validation_sampling import (
     STRATUM_COLUMNS,
     assign_strata,
@@ -672,7 +672,41 @@ class ValidationSession:
 
     def successors_of(self, key: TrackKey) -> list[str]:
         """Return the track IDs that link to this track as the same individual."""
-        return sorted(self._successors.get(key, ()), key=_track_id_order)
+        return sorted(self._successors.get(key, ()), key=track_id_order)
+
+    def relink_around(self, key: TrackKey) -> list[tuple[TrackKey, list[TrackKey]]]:
+        """Move the links to the false positive 'key' onto the tracks it linked to.
+
+        A false positive leaves its individual (see predecessors_of()) and no track may link to one. The tracks
+        linking to 'key' link to its earlier tracks instead, whatever the time gap: the user linked them as one
+        individual. If 'key' linked to no track, their link to it is dropped.
+
+        Returns:
+            '(later track, earlier tracks it now links to)' per changed track, an empty list if its link was dropped.
+        """
+        entry = self.verdicts.get(key)
+        if entry is None or not entry.false_positive:
+            return []
+        device, session_id = key[0], key[1]
+        earlier = [(device, session_id, tid) for tid in parse_links(entry.same_individual_as)]
+        earlier = [e for e in earlier if not ((other := self.verdicts.get(e)) is not None and other.false_positive)]
+        relinked = []
+        for tid in self.successors_of(key):
+            later = (device, session_id, tid)
+            existing = self.verdicts.get(later)
+            if existing is None:
+                continue
+            value = with_link(existing.same_individual_as, key[2], False)
+            for e in earlier:
+                value = with_link(value, e[2], True)
+            verdict = existing.copy()
+            verdict.same_individual_as = value
+            if verdict.validated:
+                self.set_verdict(later, verdict)
+            else:
+                self.set_pending(later, verdict)
+            relinked.append((later, list(earlier)))
+        return relinked
 
     def group_of(self, key: TrackKey) -> list[TrackKey]:
         """Return all tracks of the individual 'key' belongs to, including 'key' and unsampled tracks."""
@@ -686,7 +720,7 @@ class ValidationSession:
                 if other not in members:
                     members.add(other)
                     todo.append(other)
-        return [(device, session_id, tid) for tid in sorted(members, key=_track_id_order)]
+        return [(device, session_id, tid) for tid in sorted(members, key=track_id_order)]
 
     def recent_lineages(self, limit: int = 8) -> list[Lineage]:
         """Return the most recent distinct human lineages, newest first."""
@@ -1055,7 +1089,7 @@ def sort_tracks_chronologically(keys: Sequence[TrackKey],
         The keys in time order.
     """
     starts = starts or {}
-    return sorted(keys, key=lambda k: (str(starts.get(k) or ""), _track_id_order(k[2])))
+    return sorted(keys, key=lambda k: (str(starts.get(k) or ""), track_id_order(k[2])))
 
 
 def anchor_of(members: Sequence[TrackKey], starts: Mapping[TrackKey, Any] | None = None) -> str:
@@ -1146,11 +1180,6 @@ def _newer_version_message(file_name: str, kind: str, unknown: list[str], meta: 
     """Return the error message for a session file with fields of a newer version."""
     return (f"Session file '{file_name}' has {kind} unknown to this version ({', '.join(unknown)}): it was "
             f"probably saved by a newer version (created with {meta.get('app_version', 'unknown')}).")
-
-
-def _track_id_order(track_id: str) -> tuple[int, int | str]:
-    """Return a sort key putting numeric track IDs first in numeric order."""
-    return (0, int(track_id)) if track_id.isdigit() else (1, track_id)
 
 
 def _now_iso() -> str:

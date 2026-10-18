@@ -139,7 +139,7 @@ VALIDATION_SMALL_SAMPLE_TRACKS = 30
 
 # Validation: 'same individual' link candidates: maximum gap and overlap (s) between two tracks
 VALIDATION_SAME_INDIVIDUAL_WINDOW_S = 10.0
-VALIDATION_SAME_INDIVIDUAL_OVERLAP_S = 2.0
+VALIDATION_SAME_INDIVIDUAL_OVERLAP_S = 3.0
 
 # Validation: maximum length in characters of the per-track notes (one line)
 VALIDATION_NOTES_MAX_CHARS = 100

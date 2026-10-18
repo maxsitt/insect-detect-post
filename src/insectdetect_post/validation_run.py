@@ -11,6 +11,9 @@ and the per-image predictions with crop paths ('*_classified.csv'). Key columns 
 
 Classes:
     ValidationRun: One run's output for validation.
+
+Functions:
+    track_id_order(): Sort key of track IDs (numeric order).
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -337,14 +340,17 @@ class ValidationRun:
         window_s: float = VALIDATION_SAME_INDIVIDUAL_WINDOW_S,
         overlap_s: float = VALIDATION_SAME_INDIVIDUAL_OVERLAP_S,
     ) -> list[dict[str, Any]]:
-        """Return the tracks of the same device/session that ended shortly before 'key' started.
+        """Return the earlier tracks of the same device/session that ended shortly before 'key' started.
 
-        Candidates for a "same individual" link.
+        Candidates for a "same individual" link. Earlier means an earlier start, or the same start and a lower
+        track ID (the tracker assigns IDs in ascending order, see sort_tracks_chronologically()). One individual
+        can show up as two tracks in the same frame (a box lagging behind a fast insect), so overlaps up to
+        'overlap_s' are allowed.
 
         Args:
             key: Track.
             window_s: Maximum gap (s) between the earlier track's end and this track's start.
-            overlap_s: Maximum overlap (s) of an earlier-starting track.
+            overlap_s: Maximum overlap (s) of an earlier track.
 
         Returns:
             Dicts with 'key', 'track_id', 'gap_s' (negative = overlap), 'track_imgs', 'pred',
@@ -357,11 +363,9 @@ class ValidationRun:
         if start is None or end is None:
             return []
         result: list[dict[str, Any]] = []
-        for o_start, o_end, other_key in self._timeline.get((key[0], key[1]), []):
-            if o_start >= start:
-                break  # sorted by start
+        for _o_start, o_end, other_key in self._timeline.get((key[0], key[1]), []):
             if other_key == key:
-                continue
+                break  # sorted by start, then track ID: the rest is later
             gap = _candidate_gap(start, end, o_end, window_s, overlap_s)
             if gap is None:
                 continue
@@ -390,9 +394,42 @@ class ValidationRun:
             return False
         o_start, o_end = _parse_ts(rows[0].get("start_time")), _parse_ts(rows[0].get("end_time"))
         start, end = _parse_ts(rows[1].get("start_time")), _parse_ts(rows[1].get("end_time"))
-        if o_start is None or o_end is None or start is None or end is None or o_start >= start:
+        if o_start is None or o_end is None or start is None or end is None:
             return False
+        if (o_start, track_id_order(earlier[2])) >= (start, track_id_order(later[2])):
+            return False  # not earlier, see previous_tracks()
         return _candidate_gap(start, end, o_end, window_s, overlap_s) is not None
+
+    def link_partners(
+        self,
+        keys: Collection[TrackKey],
+        window_s: float = VALIDATION_SAME_INDIVIDUAL_WINDOW_S,
+        overlap_s: float = VALIDATION_SAME_INDIVIDUAL_OVERLAP_S,
+    ) -> dict[TrackKey, dict[TrackKey, float]]:
+        """Return the link candidates of each track in 'keys' among 'keys', earlier and later (rule of previous_tracks()).
+
+        Args:
+            keys: Tracks to pair, e.g. the validation queue.
+            window_s: Maximum gap (s) between the earlier track's end and the later track's start.
+            overlap_s: Maximum overlap (s) of the earlier track.
+
+        Returns:
+            Partner -> gap (s, negative = overlap, as 'gap_s' of previous_tracks()) per track,
+            only tracks with at least one partner.
+        """
+        partners: dict[TrackKey, dict[TrackKey, float]] = {}
+        for entries in self._timeline.values():
+            active: list[tuple[datetime, datetime, TrackKey]] = []
+            for start, end, key in entries:  # sorted by start, then track ID: all active tracks are earlier
+                if key not in keys:
+                    continue
+                active = [a for a in active if (start - a[1]).total_seconds() <= window_s]
+                for _o_start, o_end, other in active:
+                    gap = _candidate_gap(start, end, o_end, window_s, overlap_s)
+                    if gap is not None:
+                        partners.setdefault(key, {})[other] = partners.setdefault(other, {})[key] = round(gap, 1)
+                active.append((start, end, key))
+        return partners
 
     def model_lineage(self, row: dict[str, Any]) -> dict[str, str | None]:
         """Return the model taxon per validation rank of a track row."""
@@ -503,7 +540,7 @@ def _spans(frame: pl.DataFrame) -> dict[TrackKey, tuple[int, int]]:
 
 
 def _timeline(tracks: pl.DataFrame) -> dict[tuple[str, str], list[tuple[datetime, datetime, TrackKey]]]:
-    """Return the tracks per device/session in start order (tracks without timestamps skipped)."""
+    """Return the tracks per device/session in start order, then track ID (tracks without timestamps skipped)."""
     if "start_time" not in tracks.columns or "end_time" not in tracks.columns:
         return {}
     timeline: dict[tuple[str, str], list[tuple[datetime, datetime, TrackKey]]] = {}
@@ -515,8 +552,13 @@ def _timeline(tracks: pl.DataFrame) -> dict[tuple[str, str], list[tuple[datetime
             continue
         timeline.setdefault((device, session_id), []).append((o_start, o_end, (device, session_id, track_id)))
     for entries in timeline.values():
-        entries.sort(key=lambda e: e[0])
+        entries.sort(key=lambda e: (e[0], track_id_order(e[2][2])))
     return timeline
+
+
+def track_id_order(track_id: str) -> tuple[int, int | str]:
+    """Return a sort key putting numeric track IDs first in numeric order."""
+    return (0, int(track_id)) if track_id.isdigit() else (1, track_id)
 
 
 def _candidate_gap(start: datetime, end: datetime, o_end: datetime, window_s: float, overlap_s: float) -> float | None:

@@ -73,7 +73,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from insectdetect_post.constants import COLOR_FLAG_LOW_QUALITY, COLOR_VERDICT
+from insectdetect_post.constants import COLOR_FLAG_LOW_QUALITY, COLOR_FLAG_SAME_INDIVIDUAL, COLOR_VERDICT
 from insectdetect_post.validation_session import DIFFERENT_TAXA_IN_CROPS, DIFFERENT_TAXA_IN_TRACK
 from insectdetect_post.validation_taxonomy import INDET_LABEL, VALIDATION_RANKS
 
@@ -126,6 +126,9 @@ _VERDICT_GLYPHS: dict[str | None, str] = {
 # Track list: marks of an individual's first track and of the tracks continuing it
 _LINK_GLYPH_FIRST = "↱"
 LINK_GLYPH_NEXT = "↳"
+
+# Track list: opacity (0-255) of the tint on the shown track's link candidates
+_LINK_CANDIDATE_ALPHA = 80
 
 
 class _ThumbnailSignals(QObject):
@@ -748,6 +751,7 @@ class RowStatus(NamedTuple):
         continued: Later track IDs continuing this track (';'-separated), or None.
         individual: Track ID naming the individual, None without links.
         n_individual: Tracks of that individual (0 without links).
+        link_candidate: An earlier or later track of the queue could be linked (neither a false positive).
     """
     verdict: str | None = None
     low_quality: bool = False
@@ -757,6 +761,7 @@ class RowStatus(NamedTuple):
     continued: str | None = None
     individual: str | None = None
     n_individual: int = 0
+    link_candidate: bool = False
 
 
 def parse_search(query: str) -> list[tuple[str | None, str]]:
@@ -820,8 +825,8 @@ class TrackListModel(QAbstractListModel):
     """
 
     KeyRole = Qt.ItemDataRole.UserRole + 1
-    FILTERS = ("all", "todo", "done", "agree", "corrected", "indeterminate", "uncertain", "false_positive",
-               "linked", "multiple", "low_quality")
+    FILTERS = ("all", "todo", "link_candidates", "done", "agree", "corrected", "indeterminate", "uncertain",
+               "false_positive", "linked", "multiple", "low_quality")
     # Sort mode -> (row field, descending); ties see _tie_break()
     NUMERIC_SORTS: ClassVar[dict[str, tuple[str, bool]]] = {
         "prob_desc": ("prob", True),
@@ -847,6 +852,17 @@ class TrackListModel(QAbstractListModel):
         self._terms: list[tuple[str | None, str]] = []
         self._sort = self.DEFAULT_SORT
         self._blind = False
+        self._link_candidates: dict[tuple, str] = {}
+
+    def set_link_candidates(self, candidates: dict[tuple, str]) -> None:
+        """Set the shown track's link candidates ('key -> tooltip line') and repaint the changed rows.
+
+        data() highlights them in CHRONO_SORTS only, so a change of the sort shows or hides them without a call.
+        """
+        changed = self._link_candidates.keys() ^ candidates.keys()
+        self._link_candidates = dict(candidates)
+        for key in changed:
+            self.refresh_key(key)
 
     def set_blind(self, blind: bool, apply: bool = True) -> None:
         """Hide the prediction of tracks not validated yet."""
@@ -881,6 +897,8 @@ class TrackListModel(QAbstractListModel):
         mode = self._filter
         if mode == "todo" and status.verdict is not None:
             return False
+        if mode == "link_candidates" and not status.link_candidate:
+            return False
         if mode == "done" and status.verdict is None:
             return False
         if mode in ("agree", "corrected", "false_positive") and status.verdict != mode:
@@ -889,11 +907,11 @@ class TrackListModel(QAbstractListModel):
             return False
         if mode == "uncertain" and not status.uncertain:
             return False
-        if mode == "low_quality" and not status.low_quality:
+        if mode == "linked" and not status.individual:
             return False
         if mode == "multiple" and not status.multiple:
             return False
-        if mode == "linked" and not status.individual:
+        if mode == "low_quality" and not status.low_quality:
             return False
         if self._terms:
             # Blind: the hidden prediction is not searchable
@@ -953,6 +971,13 @@ class TrackListModel(QAbstractListModel):
         row = self._rows[index.row()]
         if role == self.KeyRole:
             return row["key"]
+        candidate_tip = self._link_candidates.get(row["key"]) if self._sort in self.CHRONO_SORTS else None
+        if role == Qt.ItemDataRole.BackgroundRole:
+            if candidate_tip is None:
+                return None
+            tint = QColor(COLOR_FLAG_SAME_INDIVIDUAL)
+            tint.setAlpha(_LINK_CANDIDATE_ALPHA)
+            return tint
         if role not in _STATUS_ROLES:
             return None  # only these roles need the status
         status = self._status(row["key"])
@@ -971,13 +996,14 @@ class TrackListModel(QAbstractListModel):
                     f"Prediction: {pred}\n"
                     f"Verdict: {VERDICT_LABELS.get(status.verdict, status.verdict) if status.verdict else 'not validated'}"
                     + ("\nUncertain (inc.)" if status.uncertain else "")
+                    + (f"\nMultiple individuals: {MULTIPLE_INDIVIDUALS_LABELS.get(status.multiple, status.multiple)}"
+                       if status.multiple else "")
+                    + ("\nLow image quality" if status.low_quality else "")
                     + (f"\nIndividual: ID {status.individual} ({status.n_individual} tracks)"
                        if status.individual else "")
                     + (f"\nSame individual as ID {status.linked.replace(';', ', ')}" if status.linked else "")
                     + (f"\nContinued by ID {status.continued.replace(';', ', ')}" if status.continued else "")
-                    + (f"\nMultiple individuals: {MULTIPLE_INDIVIDUALS_LABELS.get(status.multiple, status.multiple)}"
-                       if status.multiple else "")
-                    + ("\nLow image quality" if status.low_quality else ""))
+                    + (f"\n\n{candidate_tip}" if candidate_tip else ""))
         if role == Qt.ItemDataRole.ForegroundRole:
             if status.verdict in COLOR_VERDICT:
                 return QColor(COLOR_VERDICT[status.verdict])

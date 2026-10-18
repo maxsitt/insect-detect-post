@@ -136,6 +136,7 @@ from insectdetect_post.constants import (
     VALIDATION_PLAYBACK_INTERVAL_DEFAULT_MS,
     VALIDATION_PLAYBACK_INTERVALS_MS,
     VALIDATION_PROB_BIN_EDGES_DEFAULT,
+    VALIDATION_SAME_INDIVIDUAL_OVERLAP_S,
     VALIDATION_SAME_INDIVIDUAL_WINDOW_S,
     VALIDATION_SEED_DEFAULT,
     VALIDATION_SMALL_SAMPLE_TRACKS,
@@ -300,11 +301,16 @@ _LINK_BTN_BATCH_TOOLTIPS = {
 # Verdict panel: more children of a parent than this are offered by type-ahead only, not as a dropdown list
 _MAX_LISTED_CHILDREN = 3000
 
-# Track list: labels of the filters (TrackListModel.FILTERS)
+# Track list: labels and tooltips of the filters (TrackListModel.FILTERS)
 _FILTER_LABELS = {
-    "all": "All", "todo": "To do", "done": "Validated", "agree": "Agreed", "corrected": "Corrected",
-    "indeterminate": "indet. / partial", "uncertain": "Uncertain (inc.)", "false_positive": "False positive",
-    "linked": "Same individual", "multiple": "Multiple individuals", "low_quality": "Low quality",
+    "all": "All", "todo": "To do", "link_candidates": "Link candidates", "done": "Validated", "agree": "Agreed",
+    "corrected": "Corrected", "indeterminate": "indet. / partial", "uncertain": "Uncertain (inc.)",
+    "false_positive": "False positive", "linked": "Same individual", "multiple": "Multiple individuals",
+    "low_quality": "Low quality",
+}
+_FILTER_TOOLTIPS = {
+    "link_candidates": (f"Tracks with another track up to {VALIDATION_SAME_INDIVIDUAL_WINDOW_S:g} s before or after "
+                        "them - potentially the same individual"),
 }
 
 # Track list: labels of the sort modes (TrackListModel.SORTS)
@@ -430,7 +436,9 @@ species is then not compared with the model, the ranks above it are.</td></tr>
 <td>The track continues an earlier track of the same individual that the tracker lost and gave a new ID. Tick the
 earlier tracks in the <i>Same individual as</i> dropdown (<b>L</b> links the nearest one). Linked tracks share
 an <i>individual_id</i> in the export, their determinations are not copied. Tracks marked as <i>Not an
-arthropod</i> (false positive) cannot be linked.</td></tr>
+arthropod</i> (false positive) cannot be linked. In chronological order, tracks that could be linked to the shown
+track are highlighted in blue: up to {VALIDATION_SAME_INDIVIDUAL_WINDOW_S:g} s apart from it, or overlapping it by
+up to {VALIDATION_SAME_INDIVIDUAL_OVERLAP_S:g} s.</td></tr>
 <tr><td><b>Multiple individuals (M)</b></td>
 <td>More than one arthropod. <i>In crops</i>: several individuals inside the single crops; <i>in track</i>:
 one individual per crop, but the crops of the track show different taxa (a tracking error). <i>Same taxon in
@@ -448,14 +456,15 @@ e.g. &ldquo;mating pair&rdquo; or &ldquo;pollen on the legs&rdquo;.</td></tr>
 <ul>
 <li><b>Filter and sort</b> the list, e.g. only <i>To do</i> or <i>Low quality</i> tracks, sorted by predicted
 taxon, probability or camera setting. The default chronological order keeps neighboring tracks of a device
-together, which helps to spot the same individual.</li>
+together, which helps to spot the same individual. <i>Link candidates</i> shows only tracks that could be
+linked to another track.</li>
 <li><b>Search</b> for what a row shows: <i>ID 140</i>, <i>S3</i>, <i>D1</i> or part of a taxon name. IDs match
 as a whole (<i>S1</i> does not find S12), and all terms must match (<i>D1 S3</i>).</li>
 <li><b>Batch:</b> select several tracks in the list with Ctrl / Shift + click or all with Ctrl+A.
 The verdict and flag buttons then apply to each of them - <i>Agree</i> confirms each track&rsquo;s own prediction.
 <i>Copy determination to selection</i> copies the shown track&rsquo;s determination to the others instead.
-Select tracks and press <b>L</b> to link them in time order as one individual, tracks more than 10 s
-apart are not linked.</li>
+Select tracks and press <b>L</b> to link them in time order as one individual, tracks more than
+{VALIDATION_SAME_INDIVIDUAL_WINDOW_S:g} s apart are not linked.</li>
 <li><b>Auto-advance</b>: jump to the next track right after a one-click verdict.</li>
 </ul>
 
@@ -1995,9 +2004,10 @@ class VerdictPanel(QWidget):
         self.link_btn.toggled.connect(self._on_link_toggled)
         self._apply_link_style()  # adds the tint of a first track
         self.link_combo = MultiComboParameter[str]()
-        self.link_combo.setToolTip(f"Earlier tracks of this device/session that ended at most "
-                                   f"{VALIDATION_SAME_INDIVIDUAL_WINDOW_S:g} s before this one started (or overlap it "
-                                   "slightly); tick every one that shows the same individual")
+        self.link_combo.setToolTip(f"Earlier tracks that ended at most {VALIDATION_SAME_INDIVIDUAL_WINDOW_S:g} s "
+                                   f"before this one started, or overlap it by at most "
+                                   f"{VALIDATION_SAME_INDIVIDUAL_OVERLAP_S:g} s; tick every one that shows "
+                                   "the same individual")
         self.link_combo.combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.link_combo.combo.setMinimumContentsLength(10)
         self.link_combo.value_changed.connect(self._on_link_values)
@@ -2909,6 +2919,7 @@ class ValidationPage(QWidget):
         self._keys: list[TrackKey] = []
         self._key_set: set[TrackKey] = set()
         self._key_pos: dict[TrackKey, int] = {}
+        self._link_partners: dict[TrackKey, dict[TrackKey, float]] = {}
         self._current: TrackKey | None = None
         self._image_rows: list[dict[str, Any]] = []
         self._single_index = 0
@@ -2978,6 +2989,9 @@ class ValidationPage(QWidget):
         self.filter_combo = QComboBox()
         for mode in TrackListModel.FILTERS:
             self.filter_combo.addItem(_FILTER_LABELS[mode], mode)
+            if mode in _FILTER_TOOLTIPS:
+                self.filter_combo.setItemData(self.filter_combo.count() - 1, _FILTER_TOOLTIPS[mode],
+                                              Qt.ItemDataRole.ToolTipRole)
         self.filter_combo.currentIndexChanged.connect(self._apply_list_filter)
         filter_row.addWidget(self.filter_combo, 1)
         self.search_edit = QLineEdit()
@@ -3263,6 +3277,7 @@ class ValidationPage(QWidget):
         self._keys = session.keys()
         self._key_set = set(self._keys)
         self._key_pos = {key: i for i, key in enumerate(self._keys)}
+        self._link_partners = run.link_partners(self._key_set)
         extra_cols = [c for c in ("start_time", *_SORT_COLUMNS.values(), SETTING_COLUMN)
                       if c in run.tracks.columns]
         extras: dict[TrackKey, dict[str, Any]] = {
@@ -3435,20 +3450,22 @@ class ValidationPage(QWidget):
         group = self.session.group_of(key)
         individual = anchor_of(group, self.run.track_start_times) if len(group) > 1 else None
         n_individual = len(group) if individual else 0
+        candidate = not self._link_excluded(key) and any(
+            not self._link_excluded(other) for other in self._link_partners.get(key, ()))
         verdict = self.session.verdict(key)
         if verdict is None:
-            return RowStatus(individual=individual, n_individual=n_individual)
+            return RowStatus(individual=individual, n_individual=n_individual, link_candidate=candidate)
         linked = verdict.same_individual_as if not verdict.false_positive else None
         continued = join_links(self.session.successors_of(key))
         if not verdict.validated:
             return RowStatus(None, verdict.image_quality == "low",
                              has_qualifier(verdict.qualifier, ID_QUALIFIER_INC),
-                             verdict.multiple_individuals, linked, continued, individual, n_individual)
+                             verdict.multiple_individuals, linked, continued, individual, n_individual, candidate)
         verdict_type, _, lowest = self.session.derived(key)
         return RowStatus(verdict_type, verdict.image_quality == "low",
                          bool(has_qualifier(verdict.qualifier, ID_QUALIFIER_INC) and lowest),
                          verdict.multiple_individuals if not verdict.false_positive else None,
-                         linked, continued, individual, n_individual)
+                         linked, continued, individual, n_individual, candidate)
 
     def _apply_list_filter(self, *_args: Any) -> None:
         """Apply the list filter and search, keeping the shown track selected."""
@@ -3526,6 +3543,7 @@ class ValidationPage(QWidget):
         self._link_candidates, self._link_group = self._link_context(key)
         self.verdict_panel.set_link_context(self._link_candidates, self._link_group,
                                             order_hint=self.sort_combo.currentData() not in TrackListModel.CHRONO_SORTS)
+        self._update_link_highlight()
         self.verdict_panel.load(model, self.session.verdict(key), self.session.model_rank,
                                 self.session.recent_lineages())
         self._sync_blind_visibility()
@@ -3605,8 +3623,7 @@ class ValidationPage(QWidget):
             return [], []
         candidates = []
         for cand in self.run.previous_tracks(key):
-            other = self.session.verdict(cand["key"])
-            if other is not None and other.validated and other.false_positive:
+            if self._link_excluded(cand["key"]):
                 continue
             cand["human"] = self._human_lineage(cand["key"])
             candidates.append(cand)
@@ -3617,7 +3634,7 @@ class ValidationPage(QWidget):
             for member in sort_tracks_chronologically(members, self.run.track_start_times):
                 row = self.run.track_row(member) or {}
                 entry = self.session.verdict(member)
-                false_positive = entry is not None and entry.validated and entry.false_positive
+                false_positive = self._link_excluded(member)
                 # Different taxa in track: the individual may be one of them, so its determination can differ
                 in_track = (entry is not None and not entry.false_positive
                             and entry.multiple_individuals == DIFFERENT_TAXA_IN_TRACK)
@@ -3986,6 +4003,9 @@ class ValidationPage(QWidget):
             if existing is not None and existing.validated:
                 self.session.reset(self._current)  # verdict withdrawn, only notes/flags remain
             self.session.set_pending(self._current, verdict)
+        relinked = self._relink_around(self._current)
+        if relinked:
+            self.save_label.setText(f"Relinked {', '.join(relinked)}")
         self._refresh_individual(self._current, linked_before)
         self._link_candidates, self._link_group = self._link_context(self._current)
         self.verdict_panel.set_link_context(self._link_candidates, self._link_group,
@@ -4054,6 +4074,23 @@ class ValidationPage(QWidget):
         """Repaint the rows of a track and its individual."""
         for other in dict.fromkeys([key, *before, *self.session.group_of(key)] if self.session else [key]):
             self.track_model.refresh_key(other)
+        self._update_link_highlight()  # links and false positives change the candidates
+
+    def _update_link_highlight(self) -> None:
+        """Pass the shown track's link candidates to the list for highlighting: not linked to it, no false positive."""
+        key = self._current
+        if self.session is None or key is None or self._link_excluded(key):
+            self.track_model.set_link_candidates({})
+            return
+        group = set(self.session.group_of(key))
+        candidates = {}
+        for other, gap in self._link_partners.get(key, {}).items():
+            if other in group or self._link_excluded(other):
+                continue
+            when = f"{gap:g} s gap" if gap >= 0 else f"{-gap:g} s overlap"
+            candidates[other] = (f"Link candidate of the shown track ID {key[2]} ({when}) - "
+                                "select both and press L to link")
+        self.track_model.set_link_candidates(candidates)
 
     def _batch_targets(self) -> list[TrackKey]:
         """Return the selected tracks other than the current one."""
@@ -4088,6 +4125,7 @@ class ValidationPage(QWidget):
             return
         if not self._confirm_batch(len(targets), action.replace("_", " "), others=True):
             return
+        relinked: list[str] = []
         for key in targets:
             existing = self.session.verdict(key)
             verdict = self.verdict_panel.batch_verdict(action, payload, self.session.model_lineage(key), existing)
@@ -4100,11 +4138,15 @@ class ValidationPage(QWidget):
                 if existing is not None and existing.validated:
                     self.session.reset(key)
                 self.session.set_pending(key, verdict)
+            relinked += self._relink_around(key)
             self._refresh_individual(key, linked_before)
+        if relinked:
+            self._refresh_shown_track()
         self._sync_batch()
         self._update_progress()
         self._save_timer.start()
-        self.save_label.setText(f"Applied to {len(targets) + 1} tracks")
+        self.save_label.setText(f"Applied to {len(targets) + 1} tracks"
+                                + (f" · relinked {', '.join(relinked)}" if relinked else ""))
 
     def _batch_link(self, keys: list[TrackKey], link: bool) -> None:
         """Link the selected tracks as one individual per device/session, or remove their links."""
@@ -4182,6 +4224,21 @@ class ValidationPage(QWidget):
         entry = self.session.verdict(key) if self.session is not None else None
         return entry is not None and entry.false_positive
 
+    def _relink_around(self, key: TrackKey) -> list[str]:
+        """Move the links to a false positive onto its earlier tracks (see ValidationSession.relink_around()).
+
+        Returns:
+            Notes 'ID 12 → ID 10' (or 'ID 12 unlinked from ID 11') of the changed tracks.
+        """
+        if self.session is None:
+            return []
+        linked_before = self.session.group_of(key)
+        relinked = self.session.relink_around(key)
+        for later, _earlier in relinked:
+            self._refresh_individual(later, linked_before)
+        return [f"ID {later[2]} → " + ", ".join(f"ID {e[2]}" for e in earlier) if earlier
+                else f"ID {later[2]} unlinked from ID {key[2]}" for later, earlier in relinked]
+
     def _apply_determination_to_selection(self) -> None:
         """Copy the shown track's determination to the other selected tracks."""
         targets = self._batch_targets()
@@ -4197,6 +4254,7 @@ class ValidationPage(QWidget):
         confirmed = not current.validated
         if confirmed:
             current = self.verdict_panel.confirm_current()
+        relinked: list[str] = []
         for key in targets:
             verdict = self.verdict_panel.batch_verdict("apply_determination", current, self.session.model_lineage(key),
                                                        self.session.verdict(key))
@@ -4204,12 +4262,16 @@ class ValidationPage(QWidget):
                 continue
             linked_before = self.session.group_of(key)  # a copied false positive leaves its individual
             self.session.set_verdict(key, verdict)
+            relinked += self._relink_around(key)
             self._refresh_individual(key, linked_before)
+        if relinked:
+            self._refresh_shown_track()
         self._sync_batch()
         self._update_progress()
         self._save_timer.start()
         self.save_label.setText(f"Determination copied to {len(targets)} tracks"
-                                + (" (shown track confirmed)" if confirmed else ""))
+                                + (" (shown track confirmed)" if confirmed else "")
+                                + (f" · relinked {', '.join(relinked)}" if relinked else ""))
 
     def _step(self, delta: int) -> None:
         """Show the next or previous track of the list."""
