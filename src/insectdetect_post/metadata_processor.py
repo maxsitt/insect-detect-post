@@ -15,6 +15,7 @@ Life species from the species mapping ('gbif_species', 'gbif_species_key'), for 
 details from the mapping. The per-image '_classified.csv' stays the raw model output.
 
 Functions:
+    crop_filters(): The active crop filters as keep expressions, in the order they are applied.
     process_metadata_classified(): Process classified metadata with filtering and size estimation.
 """
 
@@ -64,6 +65,30 @@ def _load_gbif_species(
         mapping.filter(pl.col("gbif_species_key").is_not_null())
         .select("bioclip_species", *GBIF_SPECIES_COLUMNS)
     )
+
+
+def crop_filters(
+    min_det_conf: float | None, min_pred_prob: float | None, prob_column: str
+) -> list[tuple[str, pl.Expr]]:
+    """Return the active crop filters in the order they are applied, as '(setting, keep expression)'.
+
+    A crop without a value is kept, the filters only judge what they can. A threshold of 0 or None
+    turns that filter off.
+
+    Args:
+        min_det_conf: Minimum detection confidence ('confidence') per crop.
+        min_pred_prob: Minimum top-1 prediction probability per crop.
+        prob_column: Column of the top-1 probability ('top1_prob' or 'bioclip_top1_prob').
+
+    Returns:
+        List of '(setting name, expression that is true for kept crops)'.
+    """
+    filters = []
+    if min_det_conf is not None and min_det_conf > 0:
+        filters.append(("min_det_conf", pl.col("confidence").is_null() | (pl.col("confidence") >= min_det_conf)))
+    if min_pred_prob is not None and min_pred_prob > 0:
+        filters.append(("min_pred_prob", pl.col(prob_column).is_null() | (pl.col(prob_column) >= min_pred_prob)))
+    return filters
 
 
 def process_metadata_classified(
@@ -164,17 +189,11 @@ def process_metadata_classified(
     predicted = pl.col(prob_column).is_not_null()
     tracks_total = df.filter(predicted).select(TRACK_KEY_COLUMNS).n_unique()
 
-    conf_crops_removed = 0
-    if min_det_conf is not None and min_det_conf > 0:
+    crops_removed = {"min_det_conf": 0, "min_pred_prob": 0}
+    for setting, keep in crop_filters(min_det_conf, min_pred_prob, prob_column):
         crops_before = len(df)
-        df = df.filter(pl.col("confidence").is_null() | (pl.col("confidence") >= min_det_conf))
-        conf_crops_removed = crops_before - len(df)
-
-    pred_crops_removed = 0
-    if min_pred_prob is not None and min_pred_prob > 0:
-        crops_before = len(df)
-        df = df.filter(pl.col(prob_column).is_null() | (pl.col(prob_column) >= min_pred_prob))
-        pred_crops_removed = crops_before - len(df)
+        df = df.filter(keep)
+        crops_removed[setting] = crops_before - len(df)
 
     # Tracks without any classified crop left
     crop_tracks_removed = tracks_total - df.filter(predicted).select(TRACK_KEY_COLUMNS).n_unique()
@@ -451,8 +470,8 @@ def process_metadata_classified(
         "out_dir": layout.metadata_dir,
         "crops_total": crops_total,
         "crops_kept": len(df),
-        "conf_crops_removed": conf_crops_removed,
-        "pred_crops_removed": pred_crops_removed,
+        "conf_crops_removed": crops_removed["min_det_conf"],
+        "pred_crops_removed": crops_removed["min_pred_prob"],
         "tracks_total": tracks_total,
         "tracks_kept": len(df_final),
         "crop_tracks_removed": crop_tracks_removed,

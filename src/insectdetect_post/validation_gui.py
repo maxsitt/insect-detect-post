@@ -25,6 +25,7 @@ Functions:
 
 from __future__ import annotations
 
+import html
 import logging
 import sys
 import time
@@ -2948,6 +2949,7 @@ class ValidationPage(QWidget):
         self._play_timer = QTimer(self)
         self._play_timer.timeout.connect(self._play_step)
         self._crops_hidden: bool | None = None
+        self._show_dropped = False  # crops dropped by the run's crop filter, off for every session
         self._cache = ThumbnailCache(parent=self)
         self._create_ui()
         self._create_shortcuts()
@@ -3083,6 +3085,12 @@ class ValidationPage(QWidget):
         self.original_btn.setToolTip("Single crop with one image pixel per screen pixel (Ctrl+0)")
         self.original_btn.clicked.connect(lambda: self._open_single(self._single_index, zoom=1))
         zoom_row.addWidget(self.original_btn)
+        self.dropped_btn = QPushButton("Dropped (0)")
+        self.dropped_btn.setCheckable(True)
+        self.dropped_btn.setToolTip("Also show the crops the run's crop filter dropped - "
+                                    "they do not count for the track's aggregated values")
+        self.dropped_btn.toggled.connect(self._on_dropped_toggled)
+        zoom_row.addWidget(self.dropped_btn)
         self.play_btn = QPushButton("▶ Play  (Space)")
         self.play_btn.setCheckable(True)
         self.play_btn.setToolTip("Play the crops of the track once at the selected interval")
@@ -3262,6 +3270,11 @@ class ValidationPage(QWidget):
         self.session = session
         self.taxonomy = taxonomy
         self.save_label.clear()
+        self._show_dropped = False
+        self.dropped_btn.blockSignals(True)
+        self.dropped_btn.setChecked(False)
+        self.dropped_btn.blockSignals(False)
+        self.dropped_btn.setVisible(bool(run.crop_filter) and not session.blind)
         self._show_message("")
         self.verdict_panel.set_taxonomy(taxonomy)
         self.verdict_panel.set_blind(session.blind)
@@ -3581,24 +3594,7 @@ class ValidationPage(QWidget):
                                 self.session.recent_lineages())
         self._sync_blind_visibility()
         self._populate_comparison(key, row)
-        images = self.run.images_for(key)
-        self._image_rows = []
-        for img in images.to_dicts():
-            path = self.run.crop_abs_path(img.get("crop_path"))
-            self._image_rows.append({
-                "path": str(path) if path else "", "label": _fmt_time(img.get("timestamp"))[11:19],
-                "tooltip": self._crop_tooltip(img), "data": img,
-            })
-        self.grid_model.set_images(self._image_rows)
-        if self._view_mode == "grid":
-            self._apply_zoom()
-        self.image_info_label.setText(f"{len(self._image_rows)} crops - click one for details, double-click to enlarge")
-        if self._image_rows:
-            self.grid_view.setCurrentIndex(self.grid_model.index(0))
-            self.grid_view.scrollToTop()
-        if self.image_stack.currentWidget() is self.single_view:
-            self._single_index = 0
-            self._show_single()
+        self._load_crops(key)
         # Keep the list selection in sync
         list_row = self.track_model.row_of_key(key)
         if list_row >= 0:
@@ -3618,9 +3614,76 @@ class ValidationPage(QWidget):
                                       for c in next_images["crop_path"].to_list()[:_PREFETCH_NEXT_CROPS]) if p]
             self._cache.prefetch(paths)
 
+    def _load_crops(self, key: TrackKey, keep: int | None = None) -> None:
+        """Show the crops of a track in the grid and single view, including dropped ones if shown.
+
+        Args:
+            key: Track.
+            keep: Row of the shown crops to stay on (by its timestamp, else the nearest crop still shown);
+                None starts at the first crop.
+        """
+        if self.run is None:
+            return
+        n_dropped = self.run.n_dropped(key)
+        self.dropped_btn.setText(f"Dropped ({n_dropped})")
+        self.dropped_btn.setEnabled(n_dropped > 0)
+        previous = self._image_rows
+        images = self.run.images_for(key, dropped=self._show_dropped)
+        self._image_rows = []
+        for img in images.to_dicts():
+            path = self.run.crop_abs_path(img.get("crop_path"))
+            dropped = img.get("drop_reason") is not None
+            self._image_rows.append({
+                "path": str(path) if path else "",
+                "label": ("✕ " if dropped else "") + _fmt_time(img.get("timestamp"))[11:19],
+                "tooltip": self._crop_tooltip(img), "data": img,
+                **({"foreground": _error_color(), "dropped": True} if dropped else {}),
+            })
+        self.grid_model.set_images(self._image_rows)
+        if self._view_mode == "grid":
+            self._apply_zoom()
+        self.image_info_label.setText(f"{len(self._image_rows)} crops - click one for details, double-click to enlarge")
+        row = 0
+        if keep is not None and 0 <= keep < len(previous):
+            rows_by_time = {r["data"].get("timestamp"): i for i, r in enumerate(self._image_rows)}
+            # The same crop, else the nearest one still shown (the later one on a tie)
+            for i in sorted(range(len(previous)), key=lambda i: (abs(i - keep), i < keep)):
+                if (timestamp := previous[i]["data"].get("timestamp")) in rows_by_time:
+                    row = rows_by_time[timestamp]
+                    break
+        if self._image_rows:
+            index = self.grid_model.index(row)
+            self.grid_view.setCurrentIndex(index)
+            if keep is None:
+                self.grid_view.scrollToTop()
+            else:
+                self.grid_view.scrollTo(index)
+        if self.image_stack.currentWidget() is self.single_view:
+            self._single_index = row
+            self._show_single()
+
+    def _on_dropped_toggled(self, checked: bool) -> None:
+        """Show or hide the crops the run's crop filter dropped, staying on the shown crop."""
+        self._stop_playback()
+        self._show_dropped = checked
+        if self._current is not None:
+            self._load_crops(self._current, keep=self._single_index)
+
+    def _drop_reason(self, img: dict[str, Any]) -> str:
+        """Return why the run's crop filter dropped a crop (empty if kept)."""
+        setting = img.get("drop_reason")
+        if setting is None or self.run is None:
+            return ""
+        threshold = self.run.crop_filter.get(setting)
+        if setting == "min_det_conf":
+            return f"detection confidence {img.get('confidence'):g} < {threshold:g}"
+        return f"prediction probability {img.get('bioclip_top1_prob'):g} < {threshold:g}"
+
     def _crop_tooltip(self, img: dict[str, Any]) -> str:
-        """Return the crop tooltip: file, time, the model's 1st choice (not when blind) and size."""
+        """Return the crop tooltip: drop reason, file, time, the model's 1st choice (not when blind) and size."""
         parts = [Path(img.get("crop_path") or "").name, _fmt_time(img.get("timestamp"))]
+        if reason := self._drop_reason(img):
+            parts.insert(0, f"Dropped by the crop filter: {reason}")
         top1 = next((img[c] for c in img if c.startswith("bioclip_top1_") and not c.endswith("_prob") and img[c]),
                     None)
         if top1 and not self.verdict_panel.blind_hidden:
@@ -3834,7 +3897,9 @@ class ValidationPage(QWidget):
     def _show_image_info(self, row: dict[str, Any]) -> None:
         """Show the details of a crop (choices, confidence, size) below the views."""
         img = row["data"]
-        parts = [f"crop {self._single_index + 1} / {len(self._image_rows)}", _fmt_time(img.get("timestamp"))]
+        n_dropped = sum(1 for r in self._image_rows if r.get("dropped"))
+        parts = [f"crop {self._single_index + 1} / {len(self._image_rows)}"
+                 + (f" (incl. {n_dropped} dropped)" if n_dropped else ""), _fmt_time(img.get("timestamp"))]
         slots = () if self.verdict_panel.blind_hidden else (("top1", "1st choice"), ("top2", "2nd choice"))
         for slot, label in slots:
             name = next((img[c] for c in img
@@ -3845,7 +3910,11 @@ class ValidationPage(QWidget):
             parts.append(f"detection confidence {_fmt(img.get('confidence'))}")
         if img.get("bbox_length_mm") is not None:
             parts.append(f"size ≈ {_fmt(img.get('bbox_length_mm'), 1)} × {_fmt(img.get('bbox_width_mm'), 1)} mm")
-        self.image_info_label.setText("   ·   ".join(parts))
+        text = "   ·   ".join(parts)
+        if reason := self._drop_reason(img):
+            text = (f"<span style='color:{_error_color()}'>Dropped by the crop filter ({html.escape(reason)})</span>"
+                    f"   ·   {html.escape(text)}")
+        self.image_info_label.setText(text)
 
     @Slot()
     def toggle_playback(self) -> None:

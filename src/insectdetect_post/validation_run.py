@@ -37,6 +37,7 @@ from insectdetect_post.constants import (
     OutputLayout,
 )
 from insectdetect_post.exceptions import RunSearchCancelled, ValidationRunError
+from insectdetect_post.metadata_processor import crop_filters
 from insectdetect_post.validation_taxonomy import VALIDATION_RANKS, file_provenance
 
 # Create module-level logger
@@ -71,13 +72,15 @@ class ValidationRun:
         final_path: Path to the per-track '*_classified_final.csv'.
         tracks: One row per track (final predictions), key columns as strings.
         candidates: Candidate predictions per track (may be empty).
-        images: One row per image with crop path and per-image predictions.
+        images: One row per image with crop path and per-image predictions; 'drop_reason' names the crop
+            filter setting that dropped a crop (None for kept crops).
         active_ranks: Ranks of VALIDATION_RANKS present as 'bioclip_<rank>' in 'tracks'.
         model_rank: Deepest rank the run was classified to.
         frame_size_mm: (width, height) of the camera frame in mm if size estimation was enabled.
         final_provenance: 'file, bytes, sha256' of the final CSV when the run was opened.
         device_numbers: Number of each device by its alphabetical position (1-based), shown as 'D<n>'.
         track_start_times: Start time of each track as read from the final CSV (None if missing).
+        crop_filter: Thresholds of the run's active crop filters ('{setting: threshold}'), empty if none.
     """
     root: Path
     config: dict[str, Any]
@@ -91,9 +94,11 @@ class ValidationRun:
     final_provenance: dict[str, Any] = field(default_factory=dict)
     device_numbers: dict[str, int] = field(default_factory=dict)
     track_start_times: dict[TrackKey, Any] = field(default_factory=dict)
+    crop_filter: dict[str, float] = field(default_factory=dict)
     _row_index: dict[TrackKey, int] = field(default_factory=dict, repr=False)
     _image_spans: dict[TrackKey, tuple[int, int]] = field(default_factory=dict, repr=False)
     _candidate_spans: dict[TrackKey, tuple[int, int]] = field(default_factory=dict, repr=False)
+    _dropped: dict[TrackKey, int] = field(default_factory=dict, repr=False)
     _timeline: dict[tuple[str, str], list[tuple[datetime, datetime, TrackKey]]] = field(
         default_factory=dict, repr=False
     )
@@ -213,6 +218,14 @@ class ValidationRun:
             raise ValidationRunError(f"'{classified_path.name}' has no 'crop_path' column - crops were not saved.")
         images = images.sort([*TRACK_KEY_COLUMNS, "timestamp"])
 
+        # Crops the run's crop filter dropped: named by the first filter that removed them
+        crop_filter = cls._crop_filter(config)
+        drop_reason = pl.lit(None, pl.String)
+        for setting, keep in reversed(crop_filters(crop_filter.get("min_det_conf"), crop_filter.get("min_pred_prob"),
+                                                   "bioclip_top1_prob")):
+            drop_reason = pl.when(~keep).then(pl.lit(setting)).otherwise(drop_reason)
+        images = images.with_columns(drop_reason.alias("drop_reason"))
+
         frame_size_mm = cls._frame_size_mm(config)
         if frame_size_mm and {"x_min", "x_max", "y_min", "y_max"} <= set(images.columns):
             width_mm, height_mm = frame_size_mm
@@ -229,10 +242,14 @@ class ValidationRun:
             images=images, active_ranks=active_ranks, model_rank=model_rank, frame_size_mm=frame_size_mm,
             final_provenance=file_provenance(final_path),
             device_numbers={device: i + 1 for i, device in enumerate(sorted(set(tracks["device_id"].to_list())))},
+            crop_filter=crop_filter,
         )
         run._row_index = {key: i for i, key in enumerate(tracks.select(TRACK_KEY_COLUMNS).iter_rows())}
         run._image_spans = _spans(images)
         run._candidate_spans = _spans(candidates) if not candidates.is_empty() else {}
+        run._dropped = {tuple(row[:3]): row[3] for row in  # type: ignore[misc]
+                        images.filter(pl.col("drop_reason").is_not_null()).group_by(TRACK_KEY_COLUMNS).len().iter_rows()}
+        run._check_kept_crops()
         run._timeline = _timeline(tracks)
         if "start_time" in tracks.columns:
             run.track_start_times = {tuple(row[:3]): row[3] for row in  # type: ignore[misc]
@@ -253,6 +270,15 @@ class ValidationRun:
                 return data
         logger.warning("No config snapshot found in '%s'", root)
         return {}
+
+    @staticmethod
+    def _crop_filter(config: dict[str, Any]) -> dict[str, float]:
+        """Return the active crop filters of the config snapshot, as '{setting: threshold}'."""
+        crops_cfg = config.get("metadata", {}).get("filter_crops", {})
+        if not crops_cfg.get("enabled"):
+            return {}
+        return {name: float(value) for name in ("min_det_conf", "min_pred_prob")
+                if isinstance(value := crops_cfg.get(name), (int, float)) and value > 0}
 
     @staticmethod
     def _frame_size_mm(config: dict[str, Any]) -> tuple[float, float] | None:
@@ -280,10 +306,34 @@ class ValidationRun:
         i = self._row_index.get(key)
         return self.tracks.row(i, named=True) if i is not None else None
 
-    def images_for(self, key: TrackKey) -> pl.DataFrame:
-        """Return the per-image rows of a track, sorted by timestamp."""
+    def images_for(self, key: TrackKey, dropped: bool = False) -> pl.DataFrame:
+        """Return the per-image rows of a track, sorted by timestamp.
+
+        Args:
+            key: Track.
+            dropped: Also return the crops the run's crop filter dropped.
+        """
         span = self._image_spans.get(key)
-        return self.images.slice(*span) if span is not None else self.images.clear()
+        images = self.images.slice(*span) if span is not None else self.images.clear()
+        return images if dropped or key not in self._dropped else images.filter(pl.col("drop_reason").is_null())
+
+    def n_dropped(self, key: TrackKey) -> int:
+        """Number of crops of a track the run's crop filter dropped."""
+        return self._dropped.get(key, 0)
+
+    def _check_kept_crops(self) -> None:
+        """Warn if the kept crops of the tracks do not match their 'track_imgs' in the final CSV."""
+        if "track_imgs" not in self.tracks.columns:
+            return
+        kept = (self.images.filter(pl.col("drop_reason").is_null()).group_by(TRACK_KEY_COLUMNS).len()
+                .rename({"len": "_kept"}))
+        mismatched = (self.tracks.select([*TRACK_KEY_COLUMNS, "track_imgs"])
+                      .join(kept, on=TRACK_KEY_COLUMNS, how="left")
+                      .filter(pl.col("_kept").fill_null(0) != pl.col("track_imgs")).height)
+        if mismatched:
+            logger.warning("%d of %d tracks have a different number of kept crops than 'track_imgs' in '%s' - the "
+                           "per-image CSV or the config snapshot may not belong to this run",
+                           mismatched, self.tracks.height, self.final_path.name)
 
     def candidates_for(self, key: TrackKey) -> pl.DataFrame:
         """Return the candidate predictions of a track by weighted probability (may be empty)."""
@@ -479,12 +529,7 @@ class ValidationRun:
         if not self.config:
             return None
         meta = self.config.get("metadata", {})
-        active: dict[str, float] = {}
-        crops_cfg = meta.get("filter_crops", {})
-        if crops_cfg.get("enabled"):
-            for name in ("min_det_conf", "min_pred_prob"):
-                if isinstance(value := crops_cfg.get(name), (int, float)) and value > 0:
-                    active[name] = float(value)
+        active = self._crop_filter(self.config)
         tracks_cfg = meta.get("filter_tracks", {})
         # Fallback for older runs: 'min_det_conf', 'min_prob_weighted' in its own 'filter_predictions' section
         pred_cfg = tracks_cfg if "min_pred_prob_weighted" in tracks_cfg else meta.get("filter_predictions", {})

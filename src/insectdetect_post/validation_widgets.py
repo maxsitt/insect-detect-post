@@ -334,6 +334,8 @@ class CropGridModel(QAbstractListModel):
             return row.get("label", "")
         if role == Qt.ItemDataRole.ToolTipRole:
             return row.get("tooltip", "")
+        if role == Qt.ItemDataRole.ForegroundRole:
+            return QColor(row["foreground"]) if row.get("foreground") else None
         if role == self.PathRole:
             return row["path"]
         if role == Qt.ItemDataRole.DecorationRole:
