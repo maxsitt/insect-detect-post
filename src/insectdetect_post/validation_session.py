@@ -550,7 +550,7 @@ class ValidationSession:
             "model_rank": run.model_rank,
             # Track counts from the classified tracks down to the sample, each after the step before it
             "n_tracks_classified": run.n_tracks_classified,
-            "run_filters": run.track_filters(),  # None = no config snapshot
+            "run_filters": run.run_filters(),  # None = no config snapshot
             "n_population_total": run.tracks.height,
             "sampling": sampling.to_dict(),
             "n_population_selected": selected.height,

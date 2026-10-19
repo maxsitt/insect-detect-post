@@ -1099,28 +1099,35 @@ class SetupPage(QWidget):
                else "all classified tracks are in the results")
         if filters is None:
             return tracks_text, f"Run filters: unknown (the run has no config snapshot) - {gap}"
-        conditions = cls._filter_conditions(filters)
-        if not conditions:
+        crop_conditions, track_conditions = cls._filter_conditions(filters)
+        kept_groups = [f"{what} with {' · '.join(conditions)}"
+                       for what, conditions in (("crops", crop_conditions), ("tracks", track_conditions)) if conditions]
+        if not kept_groups:
             return tracks_text, f"Run filters: none - {gap}"
         outcome = f"{missing} of {classified} classified tracks removed" if missing else "no track removed"
-        return tracks_text, f"Run filters: kept tracks with {' · '.join(conditions)} - {outcome}"
+        return tracks_text, f"Run filters: kept {' and '.join(kept_groups)} - {outcome}"
 
     @staticmethod
-    def _filter_conditions(filters: dict[str, float]) -> list[str]:
-        """Return the run's track filters as conditions (see ValidationRun.track_filters())."""
-        conditions = []
+    def _filter_conditions(filters: dict[str, float]) -> tuple[list[str], list[str]]:
+        """Return the run's '(crop, track)' filters as conditions (see ValidationRun.run_filters())."""
+        crop_conditions = []
+        if "min_det_conf" in filters:
+            crop_conditions.append(f"detection confidence ≥ {filters['min_det_conf']:g}")
+        if "min_pred_prob" in filters:
+            crop_conditions.append(f"prediction probability ≥ {filters['min_pred_prob']:g}")
+        track_conditions = []
         low, high = filters.get("min_dur_s"), filters.get("max_dur_s")
         if low is not None and high is not None:
-            conditions.append(f"duration {low:g}-{high:g} s")
+            track_conditions.append(f"duration {low:g}-{high:g} s")
         elif low is not None:
-            conditions.append(f"duration ≥ {low:g} s")
+            track_conditions.append(f"duration ≥ {low:g} s")
         elif high is not None:
-            conditions.append(f"duration ≤ {high:g} s")
+            track_conditions.append(f"duration ≤ {high:g} s")
         if "min_det_conf_mean" in filters:
-            conditions.append(f"mean detection confidence ≥ {filters['min_det_conf_mean']:g}")
+            track_conditions.append(f"mean detection confidence ≥ {filters['min_det_conf_mean']:g}")
         if "min_pred_prob_weighted" in filters:
-            conditions.append(f"weighted probability ≥ {filters['min_pred_prob_weighted']:g}")
-        return conditions
+            track_conditions.append(f"weighted probability ≥ {filters['min_pred_prob_weighted']:g}")
+        return crop_conditions, track_conditions
 
     @staticmethod
     def _settings_text(counts: pl.DataFrame, limit: int = 8) -> str:

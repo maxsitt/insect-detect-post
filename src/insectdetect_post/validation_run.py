@@ -470,8 +470,8 @@ class ValidationRun:
             .drop_nulls("taxon").sort(["n_tracks", "taxon"], descending=[True, False])
         )
 
-    def track_filters(self) -> dict[str, float] | None:
-        """Return the track filters the run applied, as '{setting: threshold}'.
+    def run_filters(self) -> dict[str, float] | None:
+        """Return the crop and track filters the run applied, as '{setting: threshold}'.
 
         Returns:
             The active filters (empty if none), or None without a config snapshot.
@@ -479,10 +479,15 @@ class ValidationRun:
         if not self.config:
             return None
         meta = self.config.get("metadata", {})
+        active: dict[str, float] = {}
+        crops_cfg = meta.get("filter_crops", {})
+        if crops_cfg.get("enabled"):
+            for name in ("min_det_conf", "min_pred_prob"):
+                if isinstance(value := crops_cfg.get(name), (int, float)) and value > 0:
+                    active[name] = float(value)
         tracks_cfg = meta.get("filter_tracks", {})
         # Fallback for older runs: 'min_det_conf', 'min_prob_weighted' in its own 'filter_predictions' section
         pred_cfg = tracks_cfg if "min_pred_prob_weighted" in tracks_cfg else meta.get("filter_predictions", {})
-        active: dict[str, float] = {}
         if tracks_cfg.get("enabled"):
             if isinstance(value := tracks_cfg.get("min_dur_s"), (int, float)) and value > 0:
                 active["min_dur_s"] = float(value)
@@ -510,7 +515,7 @@ class ValidationRun:
             "n_crops": int(self.tracks["track_imgs"].sum()) if "track_imgs" in self.tracks.columns
             else self.images.height,
             "n_tracks_classified": self.n_tracks_classified,
-            "filters": self.track_filters(),
+            "filters": self.run_filters(),
             "model_rank": self.model_rank,
             "taxa_per_rank": {r: self.tracks[f"bioclip_{r}"].drop_nulls().n_unique() for r in self.active_ranks},
             "prob_quantiles": quantiles,

@@ -240,6 +240,10 @@ classification:
   sort_tracks:
     enabled: true
 metadata:
+  filter_crops:
+    enabled: false
+    min_det_conf: 0.2
+    min_pred_prob: 0.1
   filter_tracks:
     enabled: false
     min_dur_s: 2
@@ -391,10 +395,15 @@ than the continent.
 
 ### Metadata Processing
 
-Metadata processing settings applied to the final results.
+Metadata processing settings applied to the final results. Crop filters drop single crops before the
+track values (duration, mean confidence, weighted probability) are calculated, track filters then
+drop whole tracking IDs.
 
 | Setting                                         | Type / Options  | Default | Description                                                                                                    |
 |-------------------------------------------------|-----------------|---------|----------------------------------------------------------------------------------------------------------------|
+| `metadata.filter_crops.enabled`                 | `bool`          | `false` | Filter crops based on detection confidence and prediction probability, before track aggregation.               |
+| `metadata.filter_crops.min_det_conf`            | `float` (0-1)   | `0.2`   | Minimum detection confidence required to keep a crop (`0` turns it off).                                       |
+| `metadata.filter_crops.min_pred_prob`           | `float` (0-1)   | `0.1`   | Minimum probability of the crop's top-1 prediction required to keep a crop (`0` turns it off).                 |
 | `metadata.filter_tracks.enabled`                | `bool`          | `false` | Filter tracking IDs based on tracking duration, mean detection confidence and weighted prediction probability. |
 | `metadata.filter_tracks.min_dur_s`              | `int` (0-600)   | `2`     | Minimum total tracking duration (seconds) required to keep a tracking ID (`0` turns it off).                   |
 | `metadata.filter_tracks.max_dur_s`              | `int` (1-21600) | `3600`  | Maximum total tracking duration (seconds) allowed to keep a tracking ID.                                       |

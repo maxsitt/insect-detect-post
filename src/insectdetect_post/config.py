@@ -204,6 +204,13 @@ class ClassificationConfig(BaseModel):
         return self
 
 
+class FilterCropsConfig(BaseModel):
+    """Filter crops based on detection confidence and prediction probability, before track aggregation."""
+    enabled: bool = False
+    min_det_conf: float = Field(default=0.2, ge=0.0, le=1.0)
+    min_pred_prob: float = Field(default=0.1, ge=0.0, le=1.0)
+
+
 class FilterTrackingConfig(BaseModel):
     """Filter tracking IDs based on tracking duration, mean detection confidence and weighted probability."""
     enabled: bool = False
@@ -232,6 +239,7 @@ class EstimateSizeConfig(BaseModel):
 
 class MetadataConfig(BaseModel):
     """Metadata processing settings applied to the final results."""
+    filter_crops: FilterCropsConfig = FilterCropsConfig()
     filter_tracks: FilterTrackingConfig = FilterTrackingConfig()
     estimate_size: EstimateSizeConfig = EstimateSizeConfig()
 

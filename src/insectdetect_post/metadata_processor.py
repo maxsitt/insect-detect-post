@@ -6,8 +6,9 @@ Author:   Maximilian Sittinger (https://github.com/maxsitt)
 AI use:   Developed with AI coding assistance, reviewed by the author
 Docs:     https://maxsitt.github.io/insect-detect-docs/
 
-Aggregates image-level predictions into per-track candidates with weighted probabilities,
-applies confidence/duration/probability filters, and writes both outputs to CSV.
+Drops crops below the crop filters, aggregates image-level predictions into per-track candidates
+with weighted probabilities, applies duration/confidence/probability track filters, and writes both
+outputs to CSV.
 
 BioCLIP predictions at species rank get the accepted GBIF species name and key of each Tree of
 Life species from the species mapping ('gbif_species', 'gbif_species_key'), for joining further
@@ -68,6 +69,8 @@ def _load_gbif_species(
 def process_metadata_classified(
     metadata_path: Path,
     output_dir: Path,
+    min_det_conf: float | None = None,
+    min_pred_prob: float | None = None,
     min_dur_s: int | None = None,
     max_dur_s: int | None = None,
     min_det_conf_mean: float | None = None,
@@ -82,12 +85,15 @@ def process_metadata_classified(
     classification formats. BioCLIP results carry additional taxonomy columns
     while keeping the standard output shape, at species rank followed by
     GBIF_SPECIES_COLUMNS from the species mapping (left out if it is not
-    available). All filtering is applied at track level after aggregation.
+    available). Crop filters are applied before aggregation, so a dropped crop counts for neither
+    a track's duration nor its probabilities. Track filters are applied after aggregation.
     If the mapping is used, its provenance record is copied into the run.
 
     Args:
         metadata_path: Path to classified metadata CSV.
         output_dir: Output directory for results.
+        min_det_conf: Minimum detection confidence per crop.
+        min_pred_prob: Minimum top-1 prediction probability per crop.
         min_dur_s: Minimum track duration in seconds.
         max_dur_s: Maximum track duration in seconds.
         min_det_conf_mean: Minimum mean detection confidence per track ID.
@@ -97,8 +103,9 @@ def process_metadata_classified(
         progress_callback: Optional callback(current, total, message) for progress updates.
 
     Returns:
-        Dict with keys "candidates_path", "final_path", "out_dir", "tracks_total",
-        "tracks_kept", "min_dur_tracks_removed", "max_dur_tracks_removed",
+        Dict with keys "candidates_path", "final_path", "out_dir", "crops_total", "crops_kept",
+        "conf_crops_removed", "pred_crops_removed", "tracks_total", "tracks_kept",
+        "crop_tracks_removed", "min_dur_tracks_removed", "max_dur_tracks_removed",
         "conf_tracks_removed", and "pred_tracks_removed".
 
     Raises:
@@ -147,6 +154,30 @@ def process_metadata_classified(
             logger.warning(
                 "Removed %d of %d rows with unparseable timestamps", invalid_count, original_count
             )
+
+    if progress_callback:
+        progress_callback(15, 100, "Filtering crops...")
+
+    # Filter crops before aggregating tracks
+    prob_column = "top1_prob" if classifier_type == "ultralytics" else "bioclip_top1_prob"
+    crops_total = len(df)
+    predicted = pl.col(prob_column).is_not_null()
+    tracks_total = df.filter(predicted).select(TRACK_KEY_COLUMNS).n_unique()
+
+    conf_crops_removed = 0
+    if min_det_conf is not None and min_det_conf > 0:
+        crops_before = len(df)
+        df = df.filter(pl.col("confidence").is_null() | (pl.col("confidence") >= min_det_conf))
+        conf_crops_removed = crops_before - len(df)
+
+    pred_crops_removed = 0
+    if min_pred_prob is not None and min_pred_prob > 0:
+        crops_before = len(df)
+        df = df.filter(pl.col(prob_column).is_null() | (pl.col(prob_column) >= min_pred_prob))
+        pred_crops_removed = crops_before - len(df)
+
+    # Tracks without any classified crop left
+    crop_tracks_removed = tracks_total - df.filter(predicted).select(TRACK_KEY_COLUMNS).n_unique()
 
     if progress_callback:
         progress_callback(20, 100, "Calculating bbox sizes...")
@@ -306,8 +337,6 @@ def process_metadata_classified(
     if progress_callback:
         progress_callback(80, 100, "Filtering tracks...")
 
-    tracks_total = len(df_final)
-
     # Apply duration filtering
     min_dur_tracks_removed = 0
     if min_dur_s is not None and min_dur_s > 0:
@@ -420,8 +449,13 @@ def process_metadata_classified(
         "candidates_path": candidates_path,
         "final_path": final_path,
         "out_dir": layout.metadata_dir,
+        "crops_total": crops_total,
+        "crops_kept": len(df),
+        "conf_crops_removed": conf_crops_removed,
+        "pred_crops_removed": pred_crops_removed,
         "tracks_total": tracks_total,
         "tracks_kept": len(df_final),
+        "crop_tracks_removed": crop_tracks_removed,
         "min_dur_tracks_removed": min_dur_tracks_removed,
         "max_dur_tracks_removed": max_dur_tracks_removed,
         "conf_tracks_removed": conf_tracks_removed,

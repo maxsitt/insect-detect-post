@@ -104,6 +104,8 @@ logger = logging.getLogger(__name__)
 _CONSTRAINT_PATHS: list[str] = [
     "classification.bioclip.batch_size",
     "classification.ultralytics.batch_size",
+    "metadata.filter_crops.min_det_conf",
+    "metadata.filter_crops.min_pred_prob",
     "metadata.filter_tracks.min_dur_s",
     "metadata.filter_tracks.max_dur_s",
     "metadata.filter_tracks.min_det_conf_mean",
@@ -162,6 +164,7 @@ class ConfigWidget(QWidget):
     ultralytics_box: Any
     sort_crops_box: Any
     sort_tracks_box: Any
+    filter_crops_box: Any
     filter_tracks_box: Any
     estimate_size_box: Any
 
@@ -511,6 +514,30 @@ class ConfigWidget(QWidget):
 
     def _create_metadata_params(self) -> None:
         """Create parameter forms for metadata processing settings."""
+        filter_crops_form, self.filter_crops_box = create_param_form(
+            self.metadata_form, "filter_crops", "Filter Crops",
+            tooltip="Drop crops based on detection confidence and prediction probability, before the "
+                    "track values are calculated"
+        )
+
+        lo, hi = _get_constraints("metadata.filter_crops.min_det_conf")
+        filter_crops_form.add_parameter(create_num_param(
+            "min_det_conf", "Minimum Confidence",
+            min_val=lo, max_val=hi,
+            default=_DEFAULTS.metadata.filter_crops.min_det_conf,
+            param_type="float",
+            tooltip="Minimum required detection confidence to keep a crop - '0' turns it off"
+        ))
+
+        lo, hi = _get_constraints("metadata.filter_crops.min_pred_prob")
+        filter_crops_form.add_parameter(create_num_param(
+            "min_pred_prob", "Minimum Probability",
+            min_val=lo, max_val=hi,
+            default=_DEFAULTS.metadata.filter_crops.min_pred_prob,
+            param_type="float",
+            tooltip="Minimum required probability of the crop's top prediction to keep a crop - '0' turns it off"
+        ))
+
         filter_tracks_form, self.filter_tracks_box = create_param_form(
             self.metadata_form, "filter_tracks", "Filter Tracks",
             tooltip="Filter tracking IDs based on tracking duration, mean detection confidence and "
@@ -574,6 +601,9 @@ class ConfigWidget(QWidget):
 
         # Base tooltips kept for _sync_metadata_lock_state(), which appends a hint while locked
         self._metadata_boxes = [
+            (self.filter_crops_box,
+             ("Drop crops based on detection confidence and prediction probability, before the "
+              "track values are calculated")),
             (self.filter_tracks_box,
              ("Filter tracking IDs based on tracking duration, mean detection confidence and "
               "weighted probability of the final prediction")),
