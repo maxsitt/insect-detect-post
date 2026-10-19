@@ -142,7 +142,7 @@ def save_classification_results(
                 "check crop filename/timestamp parsing", len(df_full), len(df_cls)
             )
 
-    out = df_full.join(df_cls, on=["timestamp", "track_id"], how="left")
+    out = df_full.join(df_cls, on=["timestamp", "track_id"], how="left", maintain_order="left")
 
     if "crop_path" in out.columns:
         out = out.select([c for c in out.columns if c != "crop_path"] + ["crop_path"])

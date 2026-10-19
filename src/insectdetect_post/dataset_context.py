@@ -585,7 +585,7 @@ class DatasetContext:
                         df_concat = df_concat.select([*cols[:idx], SETTING_COLUMN, *cols[idx:]])
                     sort_cols = [c for c in ["device_id", "session_id", "timestamp", "track_id"]
                                  if c in df_concat.columns]
-                    self._metadata_df = df_concat.sort(sort_cols) if sort_cols else df_concat
+                    self._metadata_df = df_concat.sort(sort_cols, maintain_order=True) if sort_cols else df_concat
                     logger.info(
                         "Loaded merged metadata: %d rows from %d of %d files",
                         len(df_concat), len(df_list), len(self.metadata_files)

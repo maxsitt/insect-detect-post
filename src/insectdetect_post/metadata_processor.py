@@ -280,10 +280,10 @@ def process_metadata_classified(
             how="left"
         )
 
-    # Sort candidates per track by weighted and mean probabilities
+    # Sort candidates per track by weighted and mean probabilities, ties by name
     df_candidates = df_candidates.sort(
-        by=[*TRACK_KEY_COLUMNS, "candidate_prob_weighted", "candidate_prob_mean"],
-        descending=[*[False] * len(TRACK_KEY_COLUMNS), True, True]
+        by=[*TRACK_KEY_COLUMNS, "candidate_prob_weighted", "candidate_prob_mean", "candidate"],
+        descending=[*[False] * len(TRACK_KEY_COLUMNS), True, True, False]
     )
 
     # Drop negligible candidates, but always keep each track's own best row

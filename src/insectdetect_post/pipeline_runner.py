@@ -528,7 +528,7 @@ class PipelineRunner(QObject):
             "crop_path": list(crop_path_map.values()),
         })
 
-        df = df.join(crop_path_df, on=["timestamp", "track_id"], how="left")
+        df = df.join(crop_path_df, on=["timestamp", "track_id"], how="left", maintain_order="left")
         df.write_csv(self._merged_metadata_path)
         logger.info("Updated merged metadata with crop paths: %s", self._merged_metadata_path.name)
 
@@ -935,7 +935,7 @@ class PipelineRunner(QObject):
         })
 
         df = (
-            df.join(mapping_df, on="crop_path", how="left")
+            df.join(mapping_df, on="crop_path", how="left", maintain_order="left")
             .with_columns(pl.coalesce(["crop_path_new", "crop_path"]).alias("crop_path"))
             .drop("crop_path_new")
         )
