@@ -68,10 +68,10 @@ def _load_gbif_species(
 def process_metadata_classified(
     metadata_path: Path,
     output_dir: Path,
-    min_conf_mean: float | None = None,
     min_dur_s: int | None = None,
     max_dur_s: int | None = None,
-    min_prob_weighted: float | None = None,
+    min_det_conf_mean: float | None = None,
+    min_pred_prob_weighted: float | None = None,
     frame_width_mm: int | None = None,
     frame_height_mm: int | None = None,
     progress_callback: Callable[[int, int, str], None] | None = None
@@ -88,18 +88,18 @@ def process_metadata_classified(
     Args:
         metadata_path: Path to classified metadata CSV.
         output_dir: Output directory for results.
-        min_conf_mean: Minimum mean detection confidence per track ID.
         min_dur_s: Minimum track duration in seconds.
         max_dur_s: Maximum track duration in seconds.
-        min_prob_weighted: Minimum weighted mean prediction probability per track ID.
+        min_det_conf_mean: Minimum mean detection confidence per track ID.
+        min_pred_prob_weighted: Minimum weighted mean prediction probability per track ID.
         frame_width_mm: Physical frame width in millimeters.
         frame_height_mm: Physical frame height in millimeters.
         progress_callback: Optional callback(current, total, message) for progress updates.
 
     Returns:
         Dict with keys "candidates_path", "final_path", "out_dir", "tracks_total",
-        "tracks_kept", "conf_tracks_removed", "min_dur_tracks_removed",
-        "max_dur_tracks_removed", and "pred_tracks_removed".
+        "tracks_kept", "min_dur_tracks_removed", "max_dur_tracks_removed",
+        "conf_tracks_removed", and "pred_tracks_removed".
 
     Raises:
         ValueError: If no classification columns found.
@@ -308,13 +308,6 @@ def process_metadata_classified(
 
     tracks_total = len(df_final)
 
-    # Apply mean detection confidence filtering
-    conf_tracks_removed = 0
-    if min_conf_mean is not None and min_conf_mean > 0:
-        tracks_before = len(df_final)
-        df_final = df_final.filter(pl.col("det_conf_mean") >= min_conf_mean)
-        conf_tracks_removed = tracks_before - len(df_final)
-
     # Apply duration filtering
     min_dur_tracks_removed = 0
     if min_dur_s is not None and min_dur_s > 0:
@@ -328,11 +321,18 @@ def process_metadata_classified(
         df_final = df_final.filter(pl.col("duration_s") <= max_dur_s)
         max_dur_tracks_removed = tracks_before - len(df_final)
 
+    # Apply mean detection confidence filtering
+    conf_tracks_removed = 0
+    if min_det_conf_mean is not None and min_det_conf_mean > 0:
+        tracks_before = len(df_final)
+        df_final = df_final.filter(pl.col("det_conf_mean") >= min_det_conf_mean)
+        conf_tracks_removed = tracks_before - len(df_final)
+
     # Apply weighted prediction probability filtering
     pred_tracks_removed = 0
-    if min_prob_weighted is not None and min_prob_weighted > 0:
+    if min_pred_prob_weighted is not None and min_pred_prob_weighted > 0:
         tracks_before = len(df_final)
-        df_final = df_final.filter(pl.col("candidate_prob_weighted") >= min_prob_weighted)
+        df_final = df_final.filter(pl.col("candidate_prob_weighted") >= min_pred_prob_weighted)
         pred_tracks_removed = tracks_before - len(df_final)
 
     if progress_callback:
@@ -422,8 +422,8 @@ def process_metadata_classified(
         "out_dir": layout.metadata_dir,
         "tracks_total": tracks_total,
         "tracks_kept": len(df_final),
-        "conf_tracks_removed": conf_tracks_removed,
         "min_dur_tracks_removed": min_dur_tracks_removed,
         "max_dur_tracks_removed": max_dur_tracks_removed,
+        "conf_tracks_removed": conf_tracks_removed,
         "pred_tracks_removed": pred_tracks_removed,
     }

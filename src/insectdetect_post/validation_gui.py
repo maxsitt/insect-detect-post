@@ -1109,8 +1109,6 @@ class SetupPage(QWidget):
     def _filter_conditions(filters: dict[str, float]) -> list[str]:
         """Return the run's track filters as conditions (see ValidationRun.track_filters())."""
         conditions = []
-        if "min_det_conf" in filters:
-            conditions.append(f"mean detection confidence ≥ {filters['min_det_conf']:g}")
         low, high = filters.get("min_dur_s"), filters.get("max_dur_s")
         if low is not None and high is not None:
             conditions.append(f"duration {low:g}-{high:g} s")
@@ -1118,8 +1116,10 @@ class SetupPage(QWidget):
             conditions.append(f"duration ≥ {low:g} s")
         elif high is not None:
             conditions.append(f"duration ≤ {high:g} s")
-        if "min_prob_weighted" in filters:
-            conditions.append(f"weighted probability ≥ {filters['min_prob_weighted']:g}")
+        if "min_det_conf_mean" in filters:
+            conditions.append(f"mean detection confidence ≥ {filters['min_det_conf_mean']:g}")
+        if "min_pred_prob_weighted" in filters:
+            conditions.append(f"weighted probability ≥ {filters['min_pred_prob_weighted']:g}")
         return conditions
 
     @staticmethod

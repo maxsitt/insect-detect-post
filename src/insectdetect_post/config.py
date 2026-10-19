@@ -205,11 +205,12 @@ class ClassificationConfig(BaseModel):
 
 
 class FilterTrackingConfig(BaseModel):
-    """Filter tracking IDs based on mean detection confidence and total tracking duration."""
+    """Filter tracking IDs based on tracking duration, mean detection confidence and weighted probability."""
     enabled: bool = False
-    min_det_conf: float = Field(default=0.2, ge=0.0, le=1.0)
     min_dur_s: int = Field(default=2, ge=0, le=600)
     max_dur_s: int = Field(default=3600, ge=1, le=21600)
+    min_det_conf_mean: float = Field(default=0.2, ge=0.0, le=1.0)
+    min_pred_prob_weighted: float = Field(default=0.2, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
     def min_must_be_less_than_max(self) -> FilterTrackingConfig:
@@ -222,12 +223,6 @@ class FilterTrackingConfig(BaseModel):
         return self
 
 
-class FilterPredictionConfig(BaseModel):
-    """Filter tracking IDs based on weighted mean probability of the final prediction."""
-    enabled: bool = False
-    min_prob_weighted: float = Field(default=0.2, ge=0.0, le=1.0)
-
-
 class EstimateSizeConfig(BaseModel):
     """Estimate physical size based on bounding box dimensions and frame size in millimeters."""
     enabled: bool = False
@@ -238,7 +233,6 @@ class EstimateSizeConfig(BaseModel):
 class MetadataConfig(BaseModel):
     """Metadata processing settings applied to the final results."""
     filter_tracks: FilterTrackingConfig = FilterTrackingConfig()
-    filter_predictions: FilterPredictionConfig = FilterPredictionConfig()
     estimate_size: EstimateSizeConfig = EstimateSizeConfig()
 
 
@@ -439,6 +433,50 @@ def _clamp_raw(
     return raw, corrections
 
 
+def _migrate_raw(raw: dict[str, object]) -> list[str]:
+    """Move settings of older config versions to their current keys in raw, in-place.
+
+    'metadata.filter_predictions' was merged into 'metadata.filter_tracks' (one switch for all
+    track filters), 'min_det_conf' became 'min_det_conf_mean' and 'min_prob_weighted' became
+    'min_pred_prob_weighted'. The filters that were on stay on and the ones that were off stay off.
+
+    Args:
+        raw: Raw dict loaded from YAML, modified in-place.
+
+    Returns:
+        List of human-readable messages of the moved settings.
+    """
+    meta = raw.get("metadata")
+    if not isinstance(meta, dict):
+        return []
+    tracks = meta.get("filter_tracks")
+    tracks = cast(dict[str, object], tracks) if isinstance(tracks, dict) else {}
+    messages: list[str] = []
+
+    if "min_det_conf" in tracks:
+        value = tracks.pop("min_det_conf")
+        tracks.setdefault("min_det_conf_mean", value)
+        messages.append("  metadata.filter_tracks.min_det_conf -> metadata.filter_tracks.min_det_conf_mean")
+
+    predictions = meta.pop("filter_predictions", None)
+    if isinstance(predictions, dict):
+        tracks_on, predictions_on = bool(tracks.get("enabled")), bool(predictions.get("enabled"))
+        default = FilterTrackingConfig.model_fields["min_pred_prob_weighted"].default
+        tracks.setdefault("min_pred_prob_weighted", predictions.get("min_prob_weighted", default))
+        if tracks_on and not predictions_on:
+            tracks["min_pred_prob_weighted"] = 0.0
+        elif predictions_on and not tracks_on:
+            tracks.update(enabled=True, min_dur_s=0,
+                          max_dur_s=get_field_constraints(FilterTrackingConfig, "max_dur_s")["max"],
+                          min_det_conf_mean=0.0)
+        messages.append("  metadata.filter_predictions.min_prob_weighted -> "
+                        "metadata.filter_tracks.min_pred_prob_weighted")
+
+    if messages:
+        meta["filter_tracks"] = tracks
+    return messages
+
+
 def _deep_update(base: dict[str, object], updates: dict[str, object]) -> None:
     """Recursively merge updates into base dict in-place.
 
@@ -510,7 +548,8 @@ def load_config_selector() -> ConfigSelectorModel:
 def load_config_yaml(config_path: Path) -> AppConfig:
     """Load a YAML config file, clamp out-of-range values and return a validated AppConfig.
 
-    Missing keys are filled with Pydantic defaults. Out-of-range numeric values
+    Missing keys are filled with Pydantic defaults. Settings of older config versions
+    are moved to their current keys (see _migrate_raw()). Out-of-range numeric values
     are clamped to their allowed bounds and a warning is logged for each correction.
 
     Args:
@@ -521,6 +560,13 @@ def load_config_yaml(config_path: Path) -> AppConfig:
     """
     with open(config_path, "r", encoding="utf-8") as f:
         raw: dict[str, object] = yaml.safe_load(f) or {}
+
+    moved = _migrate_raw(raw)
+    if moved:
+        logger.warning(
+            "Config settings in '%s' of an older version were moved to their current keys:\n%s",
+            config_path, "\n".join(moved)
+        )
 
     raw, corrections = _clamp_raw(raw, AppConfig)
     if corrections:
@@ -535,7 +581,7 @@ def load_config_yaml(config_path: Path) -> AppConfig:
         raise ValueError(f"Invalid configuration in '{config_path}':\n{e}") from e
 
     validated_dict = config.model_dump()
-    if corrections or raw != validated_dict:
+    if moved or corrections or raw != validated_dict:
         with open(config_path, "w", encoding="utf-8") as f:
             yaml.dump(validated_dict, f, **_YAML_DUMP_KWARGS)
 
@@ -602,6 +648,7 @@ def update_config_yaml(config_path: Path, config_updates: dict[str, object]) -> 
     if config_path.exists():
         with open(config_path, "r", encoding="utf-8") as f:
             raw: dict[str, object] = yaml.safe_load(f) or {}
+        _migrate_raw(raw)  # before merging, so older keys cannot override the updates
     else:
         raw = {}
     _deep_update(raw, config_updates)

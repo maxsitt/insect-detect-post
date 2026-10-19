@@ -242,12 +242,10 @@ classification:
 metadata:
   filter_tracks:
     enabled: false
-    min_det_conf: 0.2
     min_dur_s: 2
     max_dur_s: 3600
-  filter_predictions:
-    enabled: false
-    min_prob_weighted: 0.2
+    min_det_conf_mean: 0.2
+    min_pred_prob_weighted: 0.2
   estimate_size:
     enabled: false
     frame_width_mm: 230
@@ -395,17 +393,16 @@ than the continent.
 
 Metadata processing settings applied to the final results.
 
-| Setting                                         | Type / Options  | Default | Description                                                                           |
-|-------------------------------------------------|-----------------|---------|---------------------------------------------------------------------------------------|
-| `metadata.filter_tracks.enabled`                | `bool`          | `false` | Filter tracking IDs based on mean detection confidence and total tracking duration.   |
-| `metadata.filter_tracks.min_det_conf`           | `float` (0-1)   | `0.2`   | Minimum mean detection confidence required to keep a tracking ID.                     |
-| `metadata.filter_tracks.min_dur_s`              | `int` (0-600)   | `2`     | Minimum total tracking duration (seconds) required to keep a tracking ID.             |
-| `metadata.filter_tracks.max_dur_s`              | `int` (1-21600) | `3600`  | Maximum total tracking duration (seconds) allowed to keep a tracking ID.              |
-| `metadata.filter_predictions.enabled`           | `bool`          | `false` | Filter tracking IDs based on the weighted mean probability of the final prediction.   |
-| `metadata.filter_predictions.min_prob_weighted` | `float` (0-1)   | `0.2`   | Minimum weighted mean probability required to keep a tracking ID.                     |
-| `metadata.estimate_size.enabled`                | `bool`          | `false` | Estimate physical size based on bounding box dimensions and frame size (millimeters). |
-| `metadata.estimate_size.frame_width_mm`         | `int` (10-1000) | `230`   | Physical width of the camera frame (millimeters).                                     |
-| `metadata.estimate_size.frame_height_mm`        | `int` (10-1000) | `130`   | Physical height of the camera frame (millimeters).                                    |
+| Setting                                         | Type / Options  | Default | Description                                                                                                    |
+|-------------------------------------------------|-----------------|---------|----------------------------------------------------------------------------------------------------------------|
+| `metadata.filter_tracks.enabled`                | `bool`          | `false` | Filter tracking IDs based on tracking duration, mean detection confidence and weighted prediction probability. |
+| `metadata.filter_tracks.min_dur_s`              | `int` (0-600)   | `2`     | Minimum total tracking duration (seconds) required to keep a tracking ID (`0` turns it off).                   |
+| `metadata.filter_tracks.max_dur_s`              | `int` (1-21600) | `3600`  | Maximum total tracking duration (seconds) allowed to keep a tracking ID.                                       |
+| `metadata.filter_tracks.min_det_conf_mean`      | `float` (0-1)   | `0.2`   | Minimum mean detection confidence required to keep a tracking ID (`0` turns it off).                           |
+| `metadata.filter_tracks.min_pred_prob_weighted` | `float` (0-1)   | `0.2`   | Minimum weighted mean probability of the final prediction required to keep a tracking ID (`0` turns it off).   |
+| `metadata.estimate_size.enabled`                | `bool`          | `false` | Estimate physical size based on bounding box dimensions and frame size (millimeters).                          |
+| `metadata.estimate_size.frame_width_mm`         | `int` (10-1000) | `230`   | Physical width of the camera frame (millimeters).                                                              |
+| `metadata.estimate_size.frame_height_mm`        | `int` (10-1000) | `130`   | Physical height of the camera frame (millimeters).                                                             |
 
 ---
 
@@ -416,7 +413,7 @@ A validation gives you:
 
 - a **corrected dataset** - your determinations next to the model predictions of the validated tracks
 - the **error rates** of the model - accuracy per rank, precision per predicted taxon and accuracy per
-  probability range, e.g. to report them or to choose an informed `min_prob_weighted` threshold
+  probability range, e.g. to report them or to choose an informed `min_pred_prob_weighted` threshold
 
 Open the validation window with `Validate Results` in the main window (also offered when a run has
 finished), or start it on its own:

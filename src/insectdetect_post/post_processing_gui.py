@@ -104,10 +104,10 @@ logger = logging.getLogger(__name__)
 _CONSTRAINT_PATHS: list[str] = [
     "classification.bioclip.batch_size",
     "classification.ultralytics.batch_size",
-    "metadata.filter_tracks.min_det_conf",
     "metadata.filter_tracks.min_dur_s",
     "metadata.filter_tracks.max_dur_s",
-    "metadata.filter_predictions.min_prob_weighted",
+    "metadata.filter_tracks.min_det_conf_mean",
+    "metadata.filter_tracks.min_pred_prob_weighted",
     "metadata.estimate_size.frame_width_mm",
     "metadata.estimate_size.frame_height_mm",
 ]
@@ -163,7 +163,6 @@ class ConfigWidget(QWidget):
     sort_crops_box: Any
     sort_tracks_box: Any
     filter_tracks_box: Any
-    filter_predictions_box: Any
     estimate_size_box: Any
 
     def __init__(self) -> None:
@@ -514,24 +513,16 @@ class ConfigWidget(QWidget):
         """Create parameter forms for metadata processing settings."""
         filter_tracks_form, self.filter_tracks_box = create_param_form(
             self.metadata_form, "filter_tracks", "Filter Tracks",
-            tooltip="Filter tracking IDs based on mean detection confidence and tracking duration"
+            tooltip="Filter tracking IDs based on tracking duration, mean detection confidence and "
+                    "weighted probability of the final prediction"
         )
-
-        lo, hi = _get_constraints("metadata.filter_tracks.min_det_conf")
-        filter_tracks_form.add_parameter(create_num_param(
-            "min_det_conf", "Minimum Confidence",
-            min_val=lo, max_val=hi,
-            default=_DEFAULTS.metadata.filter_tracks.min_det_conf,
-            param_type="float",
-            tooltip="Minimum required mean detection confidence to retain a tracking ID"
-        ))
 
         lo, hi = _get_constraints("metadata.filter_tracks.min_dur_s")
         filter_tracks_form.add_parameter(create_num_param(
             "min_dur_s", "Minimum Duration (s)",
             min_val=lo, max_val=hi,
             default=_DEFAULTS.metadata.filter_tracks.min_dur_s,
-            tooltip="Minimum required tracking duration (seconds) to retain a tracking ID"
+            tooltip="Minimum required tracking duration (seconds) to retain a tracking ID - '0' turns it off"
         ))
 
         lo, hi = _get_constraints("metadata.filter_tracks.max_dur_s")
@@ -542,18 +533,23 @@ class ConfigWidget(QWidget):
             tooltip="Maximum allowed tracking duration (seconds) to retain a tracking ID"
         ))
 
-        filter_predictions_form, self.filter_predictions_box = create_param_form(
-            self.metadata_form, "filter_predictions", "Filter Predictions",
-            tooltip="Filter tracking IDs based on weighted probability of the final prediction"
-        )
-
-        lo, hi = _get_constraints("metadata.filter_predictions.min_prob_weighted")
-        filter_predictions_form.add_parameter(create_num_param(
-            "min_prob_weighted", "Minimum Probability",
+        lo, hi = _get_constraints("metadata.filter_tracks.min_det_conf_mean")
+        filter_tracks_form.add_parameter(create_num_param(
+            "min_det_conf_mean", "Minimum Confidence",
             min_val=lo, max_val=hi,
-            default=_DEFAULTS.metadata.filter_predictions.min_prob_weighted,
+            default=_DEFAULTS.metadata.filter_tracks.min_det_conf_mean,
             param_type="float",
-            tooltip="Minimum required weighted probability to retain a tracking ID"
+            tooltip="Minimum required mean detection confidence to retain a tracking ID - '0' turns it off"
+        ))
+
+        lo, hi = _get_constraints("metadata.filter_tracks.min_pred_prob_weighted")
+        filter_tracks_form.add_parameter(create_num_param(
+            "min_pred_prob_weighted", "Minimum Probability",
+            min_val=lo, max_val=hi,
+            default=_DEFAULTS.metadata.filter_tracks.min_pred_prob_weighted,
+            param_type="float",
+            tooltip="Minimum required weighted probability of the final prediction to retain a tracking ID "
+                    "- '0' turns it off"
         ))
 
         size_form, self.estimate_size_box = create_param_form(
@@ -579,9 +575,8 @@ class ConfigWidget(QWidget):
         # Base tooltips kept for _sync_metadata_lock_state(), which appends a hint while locked
         self._metadata_boxes = [
             (self.filter_tracks_box,
-             "Filter tracking IDs based on mean detection confidence and tracking duration"),
-            (self.filter_predictions_box,
-             "Filter tracking IDs based on weighted probability of the final prediction"),
+             ("Filter tracking IDs based on tracking duration, mean detection confidence and "
+              "weighted probability of the final prediction")),
             (self.estimate_size_box,
              "Estimate physical size based on bounding box dimensions and frame size"),
         ]

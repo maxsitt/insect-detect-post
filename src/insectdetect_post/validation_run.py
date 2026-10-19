@@ -480,19 +480,21 @@ class ValidationRun:
             return None
         meta = self.config.get("metadata", {})
         tracks_cfg = meta.get("filter_tracks", {})
-        pred_cfg = meta.get("filter_predictions", {})
+        # Fallback for older runs: 'min_det_conf', 'min_prob_weighted' in its own 'filter_predictions' section
+        pred_cfg = tracks_cfg if "min_pred_prob_weighted" in tracks_cfg else meta.get("filter_predictions", {})
         active: dict[str, float] = {}
         if tracks_cfg.get("enabled"):
-            for name in ("min_det_conf", "min_dur_s"):
-                value = tracks_cfg.get(name)
-                if isinstance(value, (int, float)) and value > 0:
-                    active[name] = float(value)
-            if isinstance(tracks_cfg.get("max_dur_s"), (int, float)):
-                active["max_dur_s"] = float(tracks_cfg["max_dur_s"])
-        if pred_cfg.get("enabled"):
-            value = pred_cfg.get("min_prob_weighted")
+            if isinstance(value := tracks_cfg.get("min_dur_s"), (int, float)) and value > 0:
+                active["min_dur_s"] = float(value)
+            if isinstance(value := tracks_cfg.get("max_dur_s"), (int, float)):
+                active["max_dur_s"] = float(value)
+            value = tracks_cfg.get("min_det_conf_mean", tracks_cfg.get("min_det_conf"))
             if isinstance(value, (int, float)) and value > 0:
-                active["min_prob_weighted"] = float(value)
+                active["min_det_conf_mean"] = float(value)
+        if pred_cfg.get("enabled"):
+            value = pred_cfg.get("min_pred_prob_weighted", pred_cfg.get("min_prob_weighted"))
+            if isinstance(value, (int, float)) and value > 0:
+                active["min_pred_prob_weighted"] = float(value)
         return active
 
     def summary(self) -> dict[str, Any]:

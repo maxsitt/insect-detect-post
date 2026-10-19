@@ -178,8 +178,7 @@ class PipelineRunner(QObject):
             meta_config = self.config.metadata
             if classification_enabled:
                 steps.append(("Metadata Processing", self._process_metadata))
-            elif (meta_config.filter_tracks.enabled or meta_config.filter_predictions.enabled
-                  or meta_config.estimate_size.enabled):
+            elif meta_config.filter_tracks.enabled or meta_config.estimate_size.enabled:
                 logger.warning(
                     "Metadata settings are enabled but no classifier is - metadata processing "
                     "aggregates classification results and will be skipped"
@@ -633,11 +632,10 @@ class PipelineRunner(QObject):
         classified_csv = self._classified_metadata_path
         meta_config = self.config.metadata
         filter_tracks = meta_config.filter_tracks
-        min_conf = filter_tracks.min_det_conf if filter_tracks.enabled else None
         min_duration = filter_tracks.min_dur_s if filter_tracks.enabled else None
         max_duration = filter_tracks.max_dur_s if filter_tracks.enabled else None
-        filter_pred = meta_config.filter_predictions
-        min_prob = filter_pred.min_prob_weighted if filter_pred.enabled else None
+        min_conf = filter_tracks.min_det_conf_mean if filter_tracks.enabled else None
+        min_prob = filter_tracks.min_pred_prob_weighted if filter_tracks.enabled else None
         estimate_size = meta_config.estimate_size
         frame_width_mm = estimate_size.frame_width_mm if estimate_size.enabled else None
         frame_height_mm = estimate_size.frame_height_mm if estimate_size.enabled else None
@@ -647,10 +645,10 @@ class PipelineRunner(QObject):
         result = process_metadata_classified(
             metadata_path=classified_csv,
             output_dir=self.output_root,
-            min_conf_mean=min_conf,
             min_dur_s=min_duration,
             max_dur_s=max_duration,
-            min_prob_weighted=min_prob,
+            min_det_conf_mean=min_conf,
+            min_pred_prob_weighted=min_prob,
             frame_width_mm=frame_width_mm,
             frame_height_mm=frame_height_mm,
             progress_callback=self._progress_callback
@@ -661,9 +659,9 @@ class PipelineRunner(QObject):
         logger.info("Saved: %s", result['candidates_path'].name)
         logger.info("Saved: %s", result['final_path'].name)
         logger.info("Kept %d/%d tracks", result['tracks_kept'], result['tracks_total'])
-        logger.info("  - removed %d (below mean detection confidence threshold)", result['conf_tracks_removed'])
         logger.info("  - removed %d (below minimum duration threshold)", result['min_dur_tracks_removed'])
         logger.info("  - removed %d (above maximum duration threshold)", result['max_dur_tracks_removed'])
+        logger.info("  - removed %d (below mean detection confidence threshold)", result['conf_tracks_removed'])
         logger.info("  - removed %d (below weighted prediction probability threshold)", result['pred_tracks_removed'])
 
 
