@@ -594,7 +594,7 @@ class ConfigWidget(QWidget):
             "frame_width_mm", "Frame Width (mm)",
             min_val=lo, max_val=hi,
             default=_DEFAULTS.metadata.estimate_size.frame_width_mm,
-            tooltip="Physical width of the frame (millimeters) - '1' returns relative size"
+            tooltip="Physical width of the frame (millimeters)"
         ))
 
         lo, hi = _get_constraints("metadata.estimate_size.frame_height_mm")
@@ -602,7 +602,7 @@ class ConfigWidget(QWidget):
             "frame_height_mm", "Frame Height (mm)",
             min_val=lo, max_val=hi,
             default=_DEFAULTS.metadata.estimate_size.frame_height_mm,
-            tooltip="Physical height of the frame (millimeters) - '1' returns relative size"
+            tooltip="Physical height of the frame (millimeters)"
         ))
 
         # Base tooltips kept for _sync_metadata_lock_state(), which appends a hint while locked
