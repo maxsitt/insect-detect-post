@@ -108,6 +108,7 @@ from qt_parameters import (
     StringParameter,
 )
 
+from insectdetect_post.config import FilterTrackingConfig, get_field_constraints
 from insectdetect_post.constants import (
     BASE_PATH,
     COLOR_BTN_CANCEL,
@@ -159,6 +160,7 @@ from insectdetect_post.validation_sampling import (
     NONE_LABEL,
     assign_strata,
     available_strata_ranks,
+    filter_duration,
     filter_periods,
     filter_settings,
     filter_taxa,
@@ -266,6 +268,9 @@ _RANK_LABELS = {rank: rank.capitalize() for rank in VALIDATION_RANKS}
 
 # Setup page: delay of the subsample preview after the last parameter change
 _PREVIEW_DELAY_MS = 150
+
+# Setup page: start values of the duration filter for runs without their own (the processing defaults)
+_TRACK_FILTER_DEFAULTS = FilterTrackingConfig()
 
 # Verdict panel: gap between its three sections
 _SECTION_GAP = 12
@@ -751,18 +756,29 @@ class SetupPage(QWidget):
         # Track selection
         self.filter_form = ParameterForm("filter")
         self.filter_form.set_flat(True)
-        self.taxa_rank_param = ComboParameter("taxa_rank")
-        self.taxa_rank_param.set_label("Filter taxa at rank")
-        self.taxa_rank_param.setToolTip("Only validate tracks whose prediction at this rank is selected below")
-        self.filter_form.add_parameter(self.taxa_rank_param, checkable=True)
-        self.taxa_values_param = MultiComboParameter[str]("taxa_values")
-        self.taxa_values_param.combo.set_maximum_display_items(0)  # show every selected entry
-        self.taxa_values_param.set_label("Taxa")
-        self.taxa_values_param.set_placeholder("Select taxa...")
-        self.filter_form.add_parameter(self.taxa_values_param)
-        taxa_check = self.filter_form.widgets()["taxa_rank_enabled"]
-        self.taxa_values_param.setEnabled(taxa_check.value())
-        taxa_check.value_changed.connect(self.taxa_values_param.setEnabled)
+        lo, hi = _duration_constraints("min_dur_s")
+        self.min_duration_param = create_num_param(
+            "min_duration_s", "Min. track duration (s)", lo, hi, _TRACK_FILTER_DEFAULTS.min_dur_s)
+        self.filter_form.add_parameter(self.min_duration_param, checkable=True)
+        self.min_duration_check = self.filter_form.widgets()["min_duration_s_enabled"]
+        lo, hi = _duration_constraints("max_dur_s")
+        self.max_duration_param = create_num_param(
+            "max_duration_s", "Max. track duration (s)", lo, hi, _TRACK_FILTER_DEFAULTS.max_dur_s)
+        self.filter_form.add_parameter(self.max_duration_param, checkable=True)
+        self.max_duration_check = self.filter_form.widgets()["max_duration_s_enabled"]
+        field_width = max(p.line.sizeHint().width() for p in (self.min_duration_param, self.max_duration_param))
+        for number_param in (self.min_duration_param, self.max_duration_param):
+            number_param.line.setFixedWidth(field_width)
+        self._set_duration_tooltips(None)
+        self.settings_values_param = MultiComboParameter[str]("setting_values")
+        self.settings_values_param.combo.set_maximum_display_items(0)  # show every selected entry
+        self.settings_values_param.set_label("Filter camera settings")
+        self.settings_values_param.set_placeholder("Select camera settings...")
+        self.settings_values_param.setToolTip("Only validate tracks of sessions with one of these camera settings; "
+                                              f"{NONE_LABEL} = sessions without a recorded setting")
+        self.filter_form.add_parameter(self.settings_values_param, checkable=True)
+        self.settings_filter_check = self.filter_form.widgets()["setting_values_enabled"]
+        self.settings_filter_check.setToolTip(self.settings_values_param.toolTip())
         self.period_granularity_param = ComboParameter("period_granularity")
         self.period_granularity_param.set_label("Filter periods by")
         self.period_granularity_param.set_items([("Year", "year"), ("Month", "month"), ("Day", "day")])
@@ -778,15 +794,18 @@ class SetupPage(QWidget):
         self.period_filter_check.setToolTip(self.period_granularity_param.toolTip())
         self.period_values_param.setEnabled(self.period_filter_check.value())
         self.period_filter_check.value_changed.connect(self.period_values_param.setEnabled)
-        self.settings_values_param = MultiComboParameter[str]("setting_values")
-        self.settings_values_param.combo.set_maximum_display_items(0)  # show every selected entry
-        self.settings_values_param.set_label("Filter camera settings")
-        self.settings_values_param.set_placeholder("Select camera settings...")
-        self.settings_values_param.setToolTip("Only validate tracks of sessions with one of these camera settings; "
-                                              f"{NONE_LABEL} = sessions without a recorded setting")
-        self.filter_form.add_parameter(self.settings_values_param, checkable=True)
-        self.settings_filter_check = self.filter_form.widgets()["setting_values_enabled"]
-        self.settings_filter_check.setToolTip(self.settings_values_param.toolTip())
+        self.taxa_rank_param = ComboParameter("taxa_rank")
+        self.taxa_rank_param.set_label("Filter taxa at rank")
+        self.taxa_rank_param.setToolTip("Only validate tracks whose prediction at this rank is selected below")
+        self.filter_form.add_parameter(self.taxa_rank_param, checkable=True)
+        self.taxa_values_param = MultiComboParameter[str]("taxa_values")
+        self.taxa_values_param.combo.set_maximum_display_items(0)  # show every selected entry
+        self.taxa_values_param.set_label("Taxa")
+        self.taxa_values_param.set_placeholder("Select taxa...")
+        self.filter_form.add_parameter(self.taxa_values_param)
+        taxa_check = self.filter_form.widgets()["taxa_rank_enabled"]
+        self.taxa_values_param.setEnabled(taxa_check.value())
+        taxa_check.value_changed.connect(self.taxa_values_param.setEnabled)
         self.selection_label = QLabel("")
         self.selection_label.setWordWrap(True)
         self.filter_form.add_widget(self.selection_label, column=1, column_span=2)
@@ -909,7 +928,9 @@ class SetupPage(QWidget):
         # The counts of each filter list follow the other filters
         for widget in (self.taxa_rank_param, self.taxa_values_param, self.filter_form.widgets()["taxa_rank_enabled"],
                        self.period_granularity_param, self.period_values_param, self.period_filter_check,
-                       self.settings_values_param, self.settings_filter_check):
+                       self.settings_values_param, self.settings_filter_check,
+                       self.min_duration_param, self.min_duration_check,
+                       self.max_duration_param, self.max_duration_check):
             widget.value_changed.connect(lambda _: self._refresh_filter_lists())
         self._set_options_enabled(False)
 
@@ -1116,13 +1137,8 @@ class SetupPage(QWidget):
         if "min_pred_prob" in filters:
             crop_conditions.append(f"prediction probability ≥ {filters['min_pred_prob']:g}")
         track_conditions = []
-        low, high = filters.get("min_dur_s"), filters.get("max_dur_s")
-        if low is not None and high is not None:
-            track_conditions.append(f"duration {low:g}-{high:g} s")
-        elif low is not None:
-            track_conditions.append(f"duration ≥ {low:g} s")
-        elif high is not None:
-            track_conditions.append(f"duration ≤ {high:g} s")
+        if duration := _fmt_duration(filters.get("min_dur_s"), filters.get("max_dur_s")):
+            track_conditions.append(duration)
         if "min_det_conf_mean" in filters:
             track_conditions.append(f"mean detection confidence ≥ {filters['min_det_conf_mean']:g}")
         if "min_pred_prob_weighted" in filters:
@@ -1200,6 +1216,11 @@ class SetupPage(QWidget):
         self.settings_filter_check.set_value(bool(sampling.setting_filter_values)
                                              and self.settings_filter_check.isEnabled())
         self.settings_values_param.set_value(list(sampling.setting_filter_values))
+        for check, param, value in ((self.min_duration_check, self.min_duration_param, sampling.min_duration_s),
+                                    (self.max_duration_check, self.max_duration_param, sampling.max_duration_s)):
+            check.set_value(value is not None)
+            if value is not None:
+                param.set_value(int(value))
         self._updating = False
         self._refresh_filter_lists()  # list the session's taxa and periods before checking them
         self._updating = True
@@ -1324,12 +1345,22 @@ class SetupPage(QWidget):
         self.period_values_param.set_placeholder(
             "Select periods..." if periods_available else
             "all tracks started on one day" if days.height else "no track start times in this run")
+        # Duration filter: starts from the run's own duration bounds, else the processing defaults
+        run_filters = self.run.run_filters() or {}
+        self._set_duration_tooltips(run_filters)
+        for check, param, key in ((self.min_duration_check, self.min_duration_param, "min_dur_s"),
+                                  (self.max_duration_check, self.max_duration_param, "max_dur_s")):
+            check.set_value(False)
+            lo, hi = _duration_constraints(key)
+            run_value = run_filters.get(key)
+            start = getattr(_TRACK_FILTER_DEFAULTS, key) if run_value is None else round(run_value)
+            param.set_value(min(max(int(start), int(lo)), int(hi)))
         self.preview_table.setColumnHidden(0, not settings_available)
         self._updating = False
         self._refresh_filter_lists()
 
     def _refresh_filter_lists(self) -> None:
-        """Recount the taxa, period and setting lists, each for the tracks the other two filters select.
+        """Recount the taxa, period and setting lists, each for the tracks the other filters select.
 
         Every entry stays listed (possibly with 0), so checked entries survive.
         """
@@ -1337,7 +1368,8 @@ class SetupPage(QWidget):
             return
         self._updating = True  # no re-entry from the lists' own signals
         try:
-            by_taxa = filter_taxa(self.run.tracks, *self._taxa_filter())
+            by_duration = filter_duration(self.run.tracks, *self._duration_filter())
+            by_taxa = filter_taxa(by_duration, *self._taxa_filter())
             period_filter = self._period_filter()
             selected_settings = self._setting_filter() or None
             rank = self.taxa_rank_param.value()
@@ -1345,7 +1377,7 @@ class SetupPage(QWidget):
             if not rank or counts is None or counts.is_empty():
                 self.taxa_values_param.set_items([])
             else:
-                selected = filter_settings(filter_periods(self.run.tracks, *period_filter), selected_settings)
+                selected = filter_settings(filter_periods(by_duration, *period_filter), selected_settings)
                 n_taxon = dict(self.run.taxon_counts(rank, selected).iter_rows())
                 taxa = sorted(counts["taxon"].to_list(), key=lambda taxon: (-n_taxon.get(taxon, 0), taxon))
                 self.taxa_values_param.set_items({f"{taxon} ({n_taxon.get(taxon, 0)})": taxon for taxon in taxa})
@@ -1381,10 +1413,35 @@ class SetupPage(QWidget):
         """Return the selected camera settings (empty if the filter is off)."""
         return list(self.settings_values_param.value()) if self.settings_filter_check.value() else []
 
+    def _duration_filter(self) -> tuple[int | None, int | None]:
+        """Return '(min, max)' of the duration filter in seconds, None for a bound that is off."""
+        return (int(self.min_duration_param.value()) if self.min_duration_check.value() else None,
+                int(self.max_duration_param.value()) if self.max_duration_check.value() else None)
+
+    def _set_duration_tooltips(self, run_filters: dict[str, float] | None) -> None:
+        """Explain the duration bounds, with the run's own duration filter if it applied one."""
+        low, high = (run_filters or {}).get("min_dur_s"), (run_filters or {}).get("max_dur_s")
+        if low is not None and high is not None:
+            run_note = f" The run already kept only tracks of {low:g}-{high:g} s."
+        elif low is not None:
+            run_note = f" The run already kept only tracks of ≥ {low:g} s."
+        elif high is not None:
+            run_note = f" The run already kept only tracks of ≤ {high:g} s."
+        else:
+            run_note = ""
+        common = " (from the first to the last kept crop); tracks without a duration are excluded."
+        for check, param, text in (
+            (self.min_duration_check, self.min_duration_param, "Only validate tracks at least this long"),
+            (self.max_duration_check, self.max_duration_param, "Only validate tracks at most this long"),
+        ):
+            param.setToolTip(text + common + run_note)
+            check.setToolTip(param.toolTip())
+
     def _sync_setting_strata(self) -> None:
         """Offer setting strata only while the selected tracks fall into at least two setting groups."""
         assert self.run is not None
-        selected = filter_periods(filter_taxa(self.run.tracks, *self._taxa_filter()), *self._period_filter())
+        by_duration = filter_duration(self.run.tracks, *self._duration_filter())
+        selected = filter_periods(filter_taxa(by_duration, *self._taxa_filter()), *self._period_filter())
         counts = setting_counts(filter_settings(selected, self._setting_filter() or None))
         available = counts.height >= 2
         self.setting_check.setEnabled(available)
@@ -1409,6 +1466,12 @@ class SetupPage(QWidget):
             cfg.period_filter_values = list(values.get("period_values") or ())
         if values.get("setting_values_enabled"):
             cfg.setting_filter_values = list(values.get("setting_values") or ())
+        cfg.min_duration_s, cfg.max_duration_s = self._duration_filter()
+        if cfg.min_duration_s is not None and cfg.max_duration_s is not None \
+                and cfg.min_duration_s >= cfg.max_duration_s:
+            self.preview_label.setText(f"<span style='color:{_error_color()}'>The min. track duration "
+                                       "must be less than the max. track duration.</span>")
+            return None
         if values.get("stratum_rank_enabled"):
             cfg.stratum_rank = values.get("stratum_rank")
         cfg.stratum_setting = bool(values.get("stratum_setting_enabled"))
@@ -5146,19 +5209,39 @@ def _error_color() -> str:
 
 
 def _fmt_selection(sampling: dict[str, Any], full: bool = False) -> str:
-    """Return the track selection of a session (taxa, period and setting filters)."""
+    """Return the track selection of a session (duration, setting, period and taxa filters, as in the setup box)."""
     def listed(values: Sequence[str]) -> str:
         return ", ".join(values) if full or len(values) <= 4 else f"{', '.join(values[:4])}, +{len(values) - 4} more"
 
     rank, taxa = sampling["taxon_filter_rank"], sampling["taxon_filter_values"]
     granularity, periods = sampling["period_filter_granularity"], sampling["period_filter_values"]
     settings = sampling["setting_filter_values"]
-    parts = [f"{rank}: {listed(taxa)}"] if rank and taxa else []
-    if granularity and periods:
-        parts.append(f"{granularity}: {listed(periods)}")
+    duration = _fmt_duration(sampling["min_duration_s"], sampling["max_duration_s"])
+    parts = [duration] if duration else []
     if settings:
         parts.append(f"settings: {listed(settings)}")
+    if granularity and periods:
+        parts.append(f"{granularity}: {listed(periods)}")
+    if rank and taxa:
+        parts.append(f"{rank}: {listed(taxa)}")
     return "; ".join(parts) or "all tracks of the run"
+
+
+def _fmt_duration(low: float | None, high: float | None) -> str:
+    """Return a duration range as a condition, e.g. 'duration 2-3600 s' (empty without bounds)."""
+    if low is not None and high is not None:
+        return f"duration {low:g}-{high:g} s"
+    if low is not None:
+        return f"duration ≥ {low:g} s"
+    if high is not None:
+        return f"duration ≤ {high:g} s"
+    return ""
+
+
+def _duration_constraints(key: str) -> tuple[int, int]:
+    """Return the '(min, max)' allowed for a duration bound of the processing track filter."""
+    constraints = get_field_constraints(FilterTrackingConfig, key)
+    return int(constraints["min"] or 0), int(constraints["max"] or 0)
 
 
 def _fmt_subsample(sampling: dict[str, Any], full: bool = False) -> str:

@@ -439,7 +439,8 @@ guidelines and all keyboard shortcuts.
 1. **Start a session** - select a processed run (`data_processed/<timestamp>_<source>_processed`) and
    enter your name as validator. Optional:
    - **Blind determination** - the model prediction stays hidden until you have entered your own.
-   - **Track selection** - only tracks of selected predicted taxa, recording periods or camera settings.
+   - **Track selection** - only tracks within a duration range, of selected camera settings,
+     recording periods or predicted taxa.
    - **Stratified subsample** - a random sample of up to *n* tracks per stratum (predicted taxon,
      probability range, camera setting) instead of every track: representative error rates for a
      fraction of the work.

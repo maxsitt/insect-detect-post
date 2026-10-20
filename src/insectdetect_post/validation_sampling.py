@@ -14,6 +14,7 @@ Functions:
     filter_taxa(): Keep tracks of selected predicted taxa.
     filter_periods(): Keep tracks that started in selected periods.
     filter_settings(): Keep tracks of selected camera settings.
+    filter_duration(): Keep tracks within a duration range.
     period_counts(): Track counts per period of the start time.
     setting_counts(): Track counts per camera setting.
     setting_strata_available(): Whether a run has at least two setting groups.
@@ -80,6 +81,18 @@ def filter_settings(tracks: pl.DataFrame, settings: list[str] | None) -> pl.Data
     if not settings or SETTING_COLUMN not in tracks.columns:
         return tracks
     return tracks.filter(pl.col(SETTING_COLUMN).fill_null(NONE_LABEL).is_in(settings))
+
+
+def filter_duration(tracks: pl.DataFrame, min_s: int | None, max_s: int | None) -> pl.DataFrame:
+    """Keep tracks whose duration lies within 'min_s' and 'max_s' (inclusive; tracks without one are dropped)."""
+    if (min_s is None and max_s is None) or "duration_s" not in tracks.columns:
+        return tracks
+    keep = pl.col("duration_s").is_not_null()
+    if min_s is not None:
+        keep &= pl.col("duration_s") >= min_s
+    if max_s is not None:
+        keep &= pl.col("duration_s") <= max_s
+    return tracks.filter(keep)
 
 
 def period_counts(tracks: pl.DataFrame, granularity: str) -> pl.DataFrame:
