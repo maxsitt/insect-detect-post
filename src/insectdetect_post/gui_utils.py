@@ -137,7 +137,8 @@ def create_num_param(
     max_val: float,
     default: float,
     param_type: Literal["int", "float"] = "int",
-    tooltip: str = ""
+    tooltip: str = "",
+    slider_max: float | None = None
 ) -> IntParameter | FloatParameter:
     """Create a numeric parameter with slider.
 
@@ -145,28 +146,31 @@ def create_num_param(
         name: Internal parameter name.
         label: Display label shown next to the slider.
         min_val: Minimum value for both the line edit and slider.
-        max_val: Maximum value for both the line edit and slider.
+        max_val: Maximum value of the line edit, and of the slider without 'slider_max'.
         default: Default value.
         param_type: "int" for an IntParameter, "float" for a FloatParameter.
         tooltip: Optional tooltip for the parameter.
+        slider_max: Lower slider maximum for the usual range (larger values can still be typed).
 
     Returns:
         Configured IntParameter or FloatParameter instance.
     """
     param = FloatParameter(name) if param_type == "float" else IntParameter(name)
     param.set_label(label)
+    if slider_max is None:
+        slider_max = max_val
     if isinstance(param, FloatParameter):
         param.set_decimals(2)
         param.set_line_min(float(min_val))
         param.set_line_max(float(max_val))
         param.set_slider_min(float(min_val))
-        param.set_slider_max(float(max_val))
+        param.set_slider_max(float(slider_max))
         param.set_default(float(default))
     else:
         param.set_line_min(int(min_val))
         param.set_line_max(int(max_val))
         param.set_slider_min(int(min_val))
-        param.set_slider_max(int(max_val))
+        param.set_slider_max(int(slider_max))
         param.set_default(int(default))
     if tooltip:
         param.setToolTip(tooltip)

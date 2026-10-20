@@ -758,12 +758,14 @@ class SetupPage(QWidget):
         self.filter_form.set_flat(True)
         lo, hi = _duration_constraints("min_dur_s")
         self.min_duration_param = create_num_param(
-            "min_duration_s", "Min. track duration (s)", lo, hi, _TRACK_FILTER_DEFAULTS.min_dur_s)
+            "min_duration_s", "Min. track duration (s)", lo, hi, _TRACK_FILTER_DEFAULTS.min_dur_s,
+            slider_max=60)
         self.filter_form.add_parameter(self.min_duration_param, checkable=True)
         self.min_duration_check = self.filter_form.widgets()["min_duration_s_enabled"]
         lo, hi = _duration_constraints("max_dur_s")
         self.max_duration_param = create_num_param(
-            "max_duration_s", "Max. track duration (s)", lo, hi, _TRACK_FILTER_DEFAULTS.max_dur_s)
+            "max_duration_s", "Max. track duration (s)", lo, hi, _TRACK_FILTER_DEFAULTS.max_dur_s,
+            slider_max=6000)
         self.filter_form.add_parameter(self.max_duration_param, checkable=True)
         self.max_duration_check = self.filter_form.widgets()["max_duration_s_enabled"]
         field_width = max(p.line.sizeHint().width() for p in (self.min_duration_param, self.max_duration_param))
@@ -839,20 +841,17 @@ class SetupPage(QWidget):
         self.min_param = create_num_param(
             "min_per_stratum", "Min. tracks per stratum", 1, 5000, VALIDATION_MIN_PER_STRATUM_DEFAULT,
             tooltip="Strata with fewer tracks are excluded from the validation sample (shown grayed out in "
-                    "the table). Weighted results then refer to the remaining strata."
+                    "the table). Weighted results then refer to the remaining strata.",
+            slider_max=100
         )
         self.sampling_form.add_parameter(self.min_param, checkable=True)
         self.n_param = create_num_param(
             "max_per_stratum", "Max. tracks per stratum", 1, 5000, VALIDATION_MAX_PER_STRATUM_DEFAULT,
             tooltip="Random sample size per stratum (all tracks of a stratum if it is smaller). "
-                    "Unchecked: validate every track."
+                    "Unchecked: validate every track.",
+            slider_max=500
         )
         self.sampling_form.add_parameter(self.n_param, checkable=True)
-        # Sliders over the usual range, larger values can still be typed
-        for number_param, slider_max in ((self.min_param, 100), (self.n_param, 500)):
-            value = int(number_param.value())
-            number_param.set_slider_max(slider_max)
-            number_param.set_value(value)
         self.seed_param = create_num_param(
             "seed", "Random seed", 0, 99999, VALIDATION_SEED_DEFAULT,
             tooltip="Seed of the random sample: the same seed reproduces the same subsample"
