@@ -848,6 +848,11 @@ class SetupPage(QWidget):
                     "Unchecked: validate every track."
         )
         self.sampling_form.add_parameter(self.n_param, checkable=True)
+        # Sliders over the usual range, larger values can still be typed
+        for number_param, slider_max in ((self.min_param, 100), (self.n_param, 500)):
+            value = int(number_param.value())
+            number_param.set_slider_max(slider_max)
+            number_param.set_value(value)
         self.seed_param = create_num_param(
             "seed", "Random seed", 0, 99999, VALIDATION_SEED_DEFAULT,
             tooltip="Seed of the random sample: the same seed reproduces the same subsample"
