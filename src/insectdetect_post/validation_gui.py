@@ -42,6 +42,7 @@ from PySide6.QtCore import (
     QModelIndex,
     QObject,
     QSettings,
+    QSize,
     QStringListModel,
     Qt,
     QThread,
@@ -141,8 +142,6 @@ from insectdetect_post.constants import (
     VALIDATION_SAME_INDIVIDUAL_WINDOW_S,
     VALIDATION_SEED_DEFAULT,
     VALIDATION_SMALL_SAMPLE_TRACKS,
-    WINDOW_MIN_HEIGHT,
-    WINDOW_MIN_WIDTH,
 )
 from insectdetect_post.exceptions import RunSearchCancelled, ValidationRunError
 from insectdetect_post.gui_utils import (
@@ -1775,23 +1774,25 @@ class _TaxonNameLabel(QLabel):
         event.accept()
 
 
-class _SingleRow(QScrollArea):
-    """Fixed-height row that scrolls horizontally instead of wrapping.
+class _HScrollRow(QScrollArea):
+    """Row of widgets that scrolls horizontally instead of wrapping.
 
-    Holds chips ('add_widget' / 'clear') or one rich-text label. The height includes the scrollbar.
+    The height is the content height plus the scrollbar: either always ('reserve_scrollbar'), so the
+    widgets below do not move when the content starts to overflow, or only while the scrollbar is shown.
     """
 
-    # Padding, so chips do not touch the row edges
-    _PAD = 3
-
-    def __init__(self, content_height: int, parent: QWidget | None = None) -> None:
+    def __init__(self, layout: QHBoxLayout, content_height: int | None = None,
+                 reserve_scrollbar: bool = False) -> None:
         """Initialize the row.
 
         Args:
-            content_height: Height (px) of the row content.
-            parent: Parent widget.
+            layout: Layout with the widgets of the row.
+            content_height: Fixed height (px) of the content (default: the content's size hint).
+            reserve_scrollbar: Always reserve the scrollbar height.
         """
-        super().__init__(parent)
+        super().__init__()
+        self._content_height = content_height
+        self._reserve_scrollbar = reserve_scrollbar
         self.setWidgetResizable(True)
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -1799,15 +1800,54 @@ class _SingleRow(QScrollArea):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.viewport().setAutoFillBackground(False)
-        inner = QWidget()
-        inner.setAutoFillBackground(False)
-        self._layout = QHBoxLayout(inner)
-        self._layout.setContentsMargins(0, self._PAD, 0, self._PAD)
-        self._layout.setSpacing(6)
-        self._layout.addStretch(1)
-        self.setWidget(inner)
-        extent = self.style().pixelMetric(self.style().PixelMetric.PM_ScrollBarExtent)
-        self.setFixedHeight(content_height + 2 * self._PAD + extent + 2)
+        self._inner = QWidget()
+        self._inner.setAutoFillBackground(False)
+        self._inner.setLayout(layout)
+        self.setWidget(self._inner)
+        self.horizontalScrollBar().rangeChanged.connect(self._update_height)
+        self._update_height()
+
+    def _update_height(self) -> None:
+        """Fit the height to the content, plus the scrollbar if reserved or shown."""
+        content_height = self._content_height
+        if content_height is None:
+            content_height = self._inner.sizeHint().height()
+        if self._reserve_scrollbar or self.horizontalScrollBar().maximum() > 0:
+            content_height += self.style().pixelMetric(self.style().PixelMetric.PM_ScrollBarExtent)
+        self.setFixedHeight(content_height)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        """Scroll the row horizontally with the vertical mouse wheel."""
+        bar = self.horizontalScrollBar()
+        delta = event.angleDelta().y()
+        if bar.maximum() > 0 and delta and not event.angleDelta().x():
+            bar.setValue(bar.value() - delta * bar.singleStep() * 3 // 120)
+            event.accept()
+        else:
+            super().wheelEvent(event)
+
+
+class _ChipRow(_HScrollRow):
+    """Row of the verdict panel that holds chips ('add_widget' / 'clear') or one rich-text label.
+
+    The height always includes the scrollbar, so the verdict panel does not move between tracks.
+    """
+
+    # Padding, so chips do not touch the row edges
+    _PAD = 3
+
+    def __init__(self, content_height: int) -> None:
+        """Initialize the row.
+
+        Args:
+            content_height: Height (px) of a chip or label.
+        """
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, self._PAD, 0, self._PAD)
+        layout.setSpacing(6)
+        layout.addStretch(1)
+        super().__init__(layout, content_height=content_height + 2 * self._PAD + 2, reserve_scrollbar=True)
+        self._layout = layout
 
     def add_widget(self, widget: QWidget) -> None:
         """Append a widget before the trailing stretch."""
@@ -1939,7 +1979,7 @@ class VerdictPanel(QWidget):
         probe = QToolButton()  # reserves the row height when no chips are shown
         probe.setText("ID 0")
         probe.setStyleSheet(_CHIP_STYLE)
-        self.recent_row = _SingleRow(probe.sizeHint().height())
+        self.recent_row = _ChipRow(probe.sizeHint().height())
         layout.addWidget(self.recent_row)
         layout.addSpacing(_SECTION_GAP)
 
@@ -2024,7 +2064,7 @@ class VerdictPanel(QWidget):
         self.link_combo.value_changed.connect(self._on_link_values)
         flags.addWidget(self.link_btn, 0, 0)
         flags.addWidget(self.link_combo, 0, 1)
-        self.individual_row = _SingleRow(self.fontMetrics().lineSpacing())
+        self.individual_row = _ChipRow(self.fontMetrics().lineSpacing())
         self.individual_label = QLabel("")
         self.individual_label.setTextFormat(Qt.TextFormat.RichText)
         self.individual_label.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse)
@@ -2908,6 +2948,34 @@ class _ZoomSlider(QSlider):
         event.accept()
 
 
+class _CompactButton(QPushButton):
+    """Push button whose minimum width follows its text instead of the style's minimum button width.
+
+    The preferred width stays the style's, so the button only gets narrower when space is short.
+    """
+
+    # Horizontal padding (px) around the text at the minimum width
+    _PAD = 16
+
+    def __init__(self, text: str, *alt_texts: str) -> None:
+        """Initialize the button.
+
+        Args:
+            text: Button text.
+            alt_texts: Other texts the button shows later; the minimum width fits the longest
+                text, so toggling the text does not move the neighboring widgets.
+        """
+        super().__init__(text)
+        self._texts = (text, *alt_texts)
+        # The default policy (Minimum) never shrinks a push button below its preferred width
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+
+    def minimumSizeHint(self) -> QSize:
+        hint = super().minimumSizeHint()
+        text_width = max(self.fontMetrics().horizontalAdvance(t) for t in (*self._texts, self.text()))
+        return QSize(min(hint.width(), text_width + self._PAD), hint.height())
+
+
 class ValidationPage(QWidget):
     """Second page, where tracks are validated: track list, crops, info and verdict panel; saves automatically.
 
@@ -3050,10 +3118,11 @@ class ValidationPage(QWidget):
         self.info_panel = TrackInfoPanel()
         center_layout.addWidget(self.info_panel, 0)
         zoom_row = QHBoxLayout()
-        self.grid_mode_btn = QPushButton("Grid")
+        zoom_row.setContentsMargins(0, 0, 0, 0)
+        self.grid_mode_btn = _CompactButton("Grid")
         self.grid_mode_btn.setCheckable(True)
         self.grid_mode_btn.setToolTip("All crops of the track (Esc)")
-        self.single_mode_btn = QPushButton("Single")
+        self.single_mode_btn = _CompactButton("Single")
         self.single_mode_btn.setCheckable(True)
         self.single_mode_btn.setToolTip("One crop, magnified without smoothing (double-click or Enter on a crop)")
         mode_group = QButtonGroup(self)
@@ -3071,29 +3140,30 @@ class ValidationPage(QWidget):
         self.zoom_slider.setToolTip("Zoom (Ctrl+wheel or +/-): in the grid from smaller cells up to 1x, 2x, 3x ... "
                                     "screen pixels per image pixel; in the single view from 1:1 to 10x")
         self.zoom_slider.valueChanged.connect(self._on_zoom_slider)
+        self.zoom_slider.setMinimumWidth(80)
         zoom_row.addWidget(self.zoom_slider, 1)
         self.zoom_label = QLabel("")
         self.zoom_label.setMinimumWidth(self.fontMetrics().horizontalAdvance("Crop · fit 10×  "))
         zoom_row.addWidget(self.zoom_label)
-        self.fit_btn = QPushButton("Fit")
+        self.fit_btn = _CompactButton("Fit")
         self.fit_btn.setCheckable(True)
         self.fit_btn.setToolTip("Single crop at the largest supported magnification that fits the view (Ctrl+9)")
         self.fit_btn.clicked.connect(lambda: self._open_single(self._single_index, zoom=FIT))
         zoom_row.addWidget(self.fit_btn)
-        self.original_btn = QPushButton("Original (1:1)")
+        self.original_btn = _CompactButton("1:1")
         self.original_btn.setCheckable(True)
         self.original_btn.setToolTip("Single crop with one image pixel per screen pixel (Ctrl+0)")
         self.original_btn.clicked.connect(lambda: self._open_single(self._single_index, zoom=1))
         zoom_row.addWidget(self.original_btn)
-        self.dropped_btn = QPushButton("Dropped (0)")
+        self.dropped_btn = _CompactButton("Dropped (0)")
         self.dropped_btn.setCheckable(True)
         self.dropped_btn.setToolTip("Also show the crops the run's crop filter dropped - "
                                     "they do not count for the track's aggregated values")
         self.dropped_btn.toggled.connect(self._on_dropped_toggled)
         zoom_row.addWidget(self.dropped_btn)
-        self.play_btn = QPushButton("▶ Play  (Space)")
+        self.play_btn = _CompactButton("▶ Play", "❚❚ Pause")
         self.play_btn.setCheckable(True)
-        self.play_btn.setToolTip("Play the crops of the track once at the selected interval")
+        self.play_btn.setToolTip("Play the crops of the track once at the selected interval (Space)")
         self.play_btn.toggled.connect(self._on_play_toggled)
         zoom_row.addWidget(self.play_btn)
         self.play_interval = QComboBox()
@@ -3104,7 +3174,8 @@ class ValidationPage(QWidget):
         self.play_interval.setToolTip("Time between crops during playback")
         self.play_interval.currentIndexChanged.connect(self._on_play_interval_changed)
         zoom_row.addWidget(self.play_interval)
-        center_layout.addLayout(zoom_row)
+        # Scrolls horizontally when the center pane is too narrow for the row
+        center_layout.addWidget(_HScrollRow(zoom_row), 0)
         self.image_stack = QStackedWidget()
         self.grid_model = CropGridModel(self._cache, self)
         self.grid_model.max_side_changed.connect(self._on_grid_max_side)
@@ -3934,10 +4005,10 @@ class ValidationPage(QWidget):
                 self._single_index = 0
                 self._show_single()
             self._play_timer.start(int(self.play_interval.currentData() or VALIDATION_PLAYBACK_INTERVAL_DEFAULT_MS))
-            self.play_btn.setText("❚❚ Pause  (Space)")
+            self.play_btn.setText("❚❚ Pause")
         else:
             self._play_timer.stop()
-            self.play_btn.setText("▶ Play  (Space)")
+            self.play_btn.setText("▶ Play")
 
     def _stop_playback(self) -> None:
         """Stop the playback."""
@@ -4943,7 +5014,6 @@ class ValidationWindow(QMainWindow):
         """
         super().__init__(parent)
         self.setWindowTitle(_WINDOW_TITLE)
-        self.setMinimumSize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
         # Size when restored from maximized (the window opens maximized)
         screen = QApplication.primaryScreen().availableGeometry()
         self.resize(int(screen.width() * 0.8), int(screen.height() * 0.85))

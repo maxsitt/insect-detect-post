@@ -27,20 +27,23 @@ from pathlib import Path
 from typing import Any
 
 import qt_themes
-from PySide6.QtCore import Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QCloseEvent, QIcon
+from PySide6.QtCore import QSize, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtGui import QCloseEvent, QIcon, QShowEvent
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
     QProgressBar,
+    QScrollArea,
     QSizePolicy,
+    QSplitter,
     QVBoxLayout,
     QWidget,
 )
@@ -75,8 +78,6 @@ from insectdetect_post.constants import (
     MODELS_PATH,
     PROG_BAR_STYLESHEET,
     THEME_DEFAULT,
-    WINDOW_MIN_HEIGHT,
-    WINDOW_MIN_WIDTH,
 )
 from insectdetect_post.dataset_context import DatasetContext
 from insectdetect_post.dataset_inspector import DatasetInspector
@@ -99,6 +100,9 @@ from insectdetect_post.validation_run import ValidationRun
 
 # Create module-level logger
 logger = logging.getLogger(__name__)
+
+# Minimum height (px) of the log viewer, unless it is collapsed with the splitter
+_LOG_MIN_HEIGHT = 100
 
 # Field constraints, defaults and literals extracted from AppConfig
 _CONSTRAINT_PATHS: list[str] = [
@@ -1257,6 +1261,32 @@ class ConfigWidget(QWidget):
         self._update_ui_state()
 
 
+class _ConfigScrollArea(QScrollArea):
+    """Scroll area that asks for the full height of its content.
+
+    The default QScrollArea size hint is capped at a few lines of text, which would
+    leave the config boxes scrolled even when the window has room for all of them.
+    """
+
+    def __init__(self, content: QWidget) -> None:
+        """Initialize the scroll area.
+
+        Args:
+            content: Widget to show in the scroll area.
+        """
+        super().__init__()
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setWidget(content)
+
+    def sizeHint(self) -> QSize:
+        content = self.widget()
+        return content.sizeHint() if content is not None else super().sizeHint()
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(super().minimumSizeHint().width(), 0)
+
+
 class MainWindow(QMainWindow):
     """Main application window with pipeline controls, log viewer and validation access."""
     config_widget: ConfigWidget
@@ -1280,6 +1310,7 @@ class MainWindow(QMainWindow):
         self._validation_window: ValidationWindow | None = None
         self._last_run_root: Path | None = None
         self._pipeline_failed: bool = False
+        self._split_initialized: bool = False
 
         # Connect root logger to LogCache
         self._log_cache: LogCache = LogCache()
@@ -1287,7 +1318,6 @@ class MainWindow(QMainWindow):
 
         # Set main window properties
         self.setWindowTitle("Insect Detect Post-Processing")
-        self.setMinimumSize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
         screen = QApplication.primaryScreen().availableGeometry()
         w = int(screen.width() * 0.7)
         h = int(screen.height() * 0.8)
@@ -1320,10 +1350,17 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(6, 6, 6, 6)
         main_layout.setSpacing(6)
 
+        # Top pane of the splitter: scrollable config widget above the always visible
+        # control buttons and progress bar (the config can shrink to zero height, but
+        # does not grow beyond its size hint, extra height goes below the progress bar)
+        self._top_pane = QWidget()
+        top_layout = QVBoxLayout(self._top_pane)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(6)
+
         # Add config widget
         self.config_widget = ConfigWidget()
-        self.config_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
-        main_layout.addWidget(self.config_widget, 0)
+        top_layout.addWidget(_ConfigScrollArea(self.config_widget), 0)
 
         # Create control buttons
         button_layout = QHBoxLayout()
@@ -1366,7 +1403,7 @@ class MainWindow(QMainWindow):
         self.theme_select.currentTextChanged.connect(self._on_theme_change)
         button_layout.addWidget(QLabel("Theme:"))
         button_layout.addWidget(self.theme_select)
-        main_layout.addLayout(button_layout, 0)
+        top_layout.addLayout(button_layout, 0)
 
         # Create progress bar and label
         progress_layout = QVBoxLayout()
@@ -1378,20 +1415,62 @@ class MainWindow(QMainWindow):
         self.progress_label = QLabel()
         self.progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         progress_layout.addWidget(self.progress_label)
-        main_layout.addLayout(progress_layout, 0)
+        top_layout.addLayout(progress_layout, 0)
+        top_layout.addStretch(1)
 
-        # Create log viewer
+        # Create log viewer (bottom pane of the splitter, can be collapsed completely)
         self.log_viewer = LogViewer(self._log_cache)
         self.log_viewer.set_levels([logging.ERROR, logging.WARNING, logging.INFO])
-        self.log_viewer.setMinimumHeight(100)
+        self.log_viewer.setMinimumHeight(_LOG_MIN_HEIGHT)
         self.log_viewer.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
-        main_layout.addWidget(self.log_viewer, 1)
+
+        # Splitter between top pane and log viewer (the log viewer takes extra height)
+        self._splitter = QSplitter(Qt.Orientation.Vertical)
+        self._splitter.setHandleWidth(10)
+        self._splitter.addWidget(self._top_pane)
+        self._splitter.addWidget(self.log_viewer)
+        self._splitter.setCollapsible(0, False)
+        self._splitter.setCollapsible(1, True)
+        self._splitter.setStretchFactor(0, 0)
+        self._splitter.setStretchFactor(1, 1)
+        self._splitter.handle(1).setToolTip("Drag to resize or hide the log viewer")
+        main_layout.addWidget(self._splitter, 1)
+
+        # Expand the log viewer to its default height when an error is logged
+        self._log_cache.added.connect(self._on_log_record)
 
         # Connect ConfigWidget signals to MainWindow widgets
         self.config_widget.progress_updated.connect(self.progress_bar.setValue)
         self.config_widget.status_updated.connect(self.progress_label.setText)
         self.config_widget.run_enabled_changed.connect(self.run_btn.setEnabled)
         self.config_widget.inspection_active_changed.connect(self._on_inspection_active_change)
+
+    def showEvent(self, event: QShowEvent) -> None:
+        """Start with the default split between config and log viewer on the first show."""
+        super().showEvent(event)
+        if not self._split_initialized:
+            self._split_initialized = True
+            self._set_log_height(self._default_log_height())
+
+    def _default_log_height(self) -> int:
+        """Return the log viewer height that leaves the top pane its full size hint."""
+        total = sum(self._splitter.sizes())
+        top_height = self._top_pane.sizeHint().height()
+        return max(total - top_height, _LOG_MIN_HEIGHT)
+
+    def _set_log_height(self, height: int) -> None:
+        """Resize the log viewer to the given height, the top pane takes the rest."""
+        total = sum(self._splitter.sizes())
+        self._splitter.setSizes([total - height, height])
+
+    @Slot(object)
+    def _on_log_record(self, record: logging.LogRecord) -> None:
+        """Expand a collapsed or shrunk log viewer to its default height on errors."""
+        if record.levelno < logging.ERROR:
+            return
+        default_height = self._default_log_height()
+        if self._splitter.sizes()[1] < default_height:
+            self._set_log_height(default_height)
 
     def _style_progress_bar(self) -> None:
         """Apply the progress bar stylesheet with colors from the active theme."""

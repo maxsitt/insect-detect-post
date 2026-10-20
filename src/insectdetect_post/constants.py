@@ -152,10 +152,6 @@ VALIDATION_PLAYBACK_INTERVAL_DEFAULT_MS = 500
 SETTINGS_ORG = "insect-detect"
 SETTINGS_APP = "insect-detect-post"
 
-# GUI styling: main window minimum size
-WINDOW_MIN_WIDTH = 1200
-WINDOW_MIN_HEIGHT = 800
-
 # GUI styling: default qt-themes theme (used if no theme is persisted)
 THEME_DEFAULT = "github_dark"
 
