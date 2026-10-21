@@ -1004,13 +1004,13 @@ class TrackListModel(QAbstractListModel):
                     f"Prediction: {pred}\n"
                     f"Verdict: {VERDICT_LABELS.get(status.verdict, status.verdict) if status.verdict else 'not validated'}"
                     + ("\nUncertain (inc.)" if status.uncertain else "")
-                    + (f"\nMultiple individuals: {MULTIPLE_INDIVIDUALS_LABELS.get(status.multiple, status.multiple)}"
-                       if status.multiple else "")
-                    + ("\nLow image quality" if status.low_quality else "")
                     + (f"\nIndividual: ID {status.individual} ({status.n_individual} tracks)"
                        if status.individual else "")
                     + (f"\nSame individual as ID {status.linked.replace(';', ', ')}" if status.linked else "")
                     + (f"\nContinued by ID {status.continued.replace(';', ', ')}" if status.continued else "")
+                    + (f"\nMultiple individuals: {MULTIPLE_INDIVIDUALS_LABELS.get(status.multiple, status.multiple)}"
+                       if status.multiple else "")
+                    + ("\nLow image quality" if status.low_quality else "")
                     + (f"\nPre-filled from {status.prefilled_from}{' (edited)' if status.prefill_edited else ''}"
                        if status.prefilled_from else "")
                     + (f"\n\n{candidate_tip}" if candidate_tip else ""))
