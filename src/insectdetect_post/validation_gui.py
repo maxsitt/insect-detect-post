@@ -738,7 +738,7 @@ class SetupPage(QWidget):
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.sessions_table.verticalHeader().setVisible(False)
         self.sessions_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        # Several sessions only for the validated CSV, the other buttons need exactly one
+        # Several sessions for deleting and the validated CSV, resume and the settings need exactly one
         self.sessions_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.sessions_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.sessions_table.setMaximumHeight(140)
@@ -753,9 +753,9 @@ class SetupPage(QWidget):
                                          "into the boxes below, to start a new session with the same settings")
         self.use_settings_btn.clicked.connect(self._use_settings)
         sessions_buttons.addWidget(self.use_settings_btn)
-        self.delete_btn = StyledButton("Delete selected session", COLOR_BTN_CANCEL)
-        self.delete_btn.setToolTip("Remove the session with its verdicts, history and exported statistics "
-                                   "(the validated export in the metadata directory is kept)")
+        self.delete_btn = StyledButton("Delete selected sessions", COLOR_BTN_CANCEL)
+        self.delete_btn.setToolTip("Remove the selected sessions with their verdicts, history and exported statistics "
+                                   "(validated exports in the metadata directory are kept)")
         self.delete_btn.clicked.connect(self._delete_selected)
         sessions_buttons.addWidget(self.delete_btn)
         self.export_sessions_btn = StyledButton("Export validated CSV", COLOR_BTN_RUN)
@@ -770,8 +770,8 @@ class SetupPage(QWidget):
         self.sessions_hint = QLabel("No sessions yet for this run.")
         sessions_buttons.addWidget(self.sessions_hint)
         sessions_layout.addLayout(sessions_buttons)
-        self.session_buttons = (self.resume_btn, self.use_settings_btn, self.delete_btn)
-        for button in self.session_buttons:
+        self.session_buttons = (self.resume_btn, self.use_settings_btn)  # exactly one session
+        for button in (*self.session_buttons, self.delete_btn):
             button.setEnabled(False)
         self.sessions_table.itemSelectionChanged.connect(self._update_session_buttons)
         self.sessions_box = create_groupbox(
@@ -1223,10 +1223,11 @@ class SetupPage(QWidget):
         self._update_session_buttons()
 
     def _update_session_buttons(self) -> None:
-        """Enable the session buttons for one selected session, the validated CSV also for several."""
+        """Enable resume and the settings for one selected session, delete and the validated CSV also for several."""
         n_selected = len(self._selected_rows())
         for button in self.session_buttons:
             button.setEnabled(n_selected == 1)
+        self.delete_btn.setEnabled(n_selected >= 1)
         self.export_sessions_btn.setEnabled(n_selected >= 1)
 
     def _selected_rows(self) -> list[int]:
@@ -1287,36 +1288,50 @@ class SetupPage(QWidget):
         self.sessions_hint.setText("Settings copied below - 'Start validation' creates a new session with them.")
 
     def _delete_selected(self) -> None:
-        """Delete the selected session after confirmation."""
-        info = self._selected_session()
-        if info is None:
+        """Delete the selected sessions with their files after confirmation (see session_files())."""
+        infos = [self._sessions[row] for row in self._selected_rows() if row in self._sessions]
+        if not infos:
             return
-        csv_path = Path(info["csv_path"])
+        title = "Delete sessions" if len(infos) > 1 else "Delete session"
         try:
-            paths = session_files(csv_path)
+            files = {Path(info["csv_path"]): session_files(Path(info["csv_path"])) for info in infos}
         except ValueError as e:
-            QMessageBox.critical(self, "Delete session", str(e))
+            QMessageBox.critical(self, title, str(e))
             return
-        listed = "\n".join(f"  {path.name}" for path in paths) or "  (no files left)"
+        if len(infos) == 1:
+            info, paths = infos[0], next(iter(files.values()))
+            listed = "\n".join(f"  {path.name}" for path in paths) or "  (no files left)"
+            question = (f"Delete the session of '{info['validator']}' started {_fmt_time(info['started'])}?\n\n"
+                        f"{info['n_validated']} of {info['n_sampled']} tracks are validated in it. "
+                        f"These files are removed permanently:\n{listed}\n\n"
+                        "The validated export in the metadata directory is kept.")
+        else:
+            listed = "\n".join(f"  {info['validator']}  ·  started {_fmt_time(info['started'])}  ·  "
+                               f"{info['n_validated']} / {info['n_sampled']} validated" for info in infos)
+            question = (f"Delete these {len(infos)} sessions?\n\n{listed}\n\n"
+                        f"Their {sum(len(paths) for paths in files.values())} files (verdicts, history, log and "
+                        "exported statistics) are removed permanently. Validated exports in the metadata "
+                        "directory are kept, also those of several sessions with their session copies.")
         reply = QMessageBox.question(
-            self, "Delete session",
-            f"Delete the session of '{info['validator']}' started {_fmt_time(info['started'])}?\n\n"
-            f"{info['n_validated']} of {info['n_sampled']} tracks are validated in it. "
-            f"These files are removed permanently:\n{listed}\n\n"
-            "The validated export in the metadata directory is kept.",
+            self, title, question,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
-        # Close the session log file first
-        self.session_deleted.emit(csv_path)
-        try:
-            removed = delete_session(csv_path)
-        except OSError as e:
-            QMessageBox.critical(self, "Delete session", f"Could not delete the session:\n\n{e}")
-            return
+        n_removed, failed = 0, []
+        for csv_path in files:
+            self.session_deleted.emit(csv_path)  # closes its log file first
+            try:
+                n_removed += len(delete_session(csv_path))
+            except OSError as e:
+                failed.append(str(e))  # names the file in use
         self._refresh_sessions()
-        self.sessions_hint.setText(f"Session deleted ({len(removed)} files).")
+        n_deleted = len(files) - len(failed)
+        if failed:
+            QMessageBox.critical(self, title, f"Could not delete {len(failed)} of {len(files)} sessions:\n\n"
+                                 + "\n".join(failed))
+        deleted = "Session deleted" if n_deleted == 1 else f"{n_deleted} sessions deleted"
+        self.sessions_hint.setText(f"{deleted} ({n_removed} files).")
 
     def _resume_selected(self) -> None:
         """Resume the selected session (after a warning if the run has changed)."""

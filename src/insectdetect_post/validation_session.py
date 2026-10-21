@@ -45,6 +45,7 @@ import json
 import logging
 import re
 import shutil
+import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -1070,24 +1071,39 @@ def session_files(csv_path: Path) -> list[Path]:
 
 
 def delete_session(csv_path: Path) -> list[Path]:
-    """Delete a session with its files (see session_files()), the validated export is kept.
+    """Delete a session with its files (see session_files()), all of them or none; the validated export is kept.
+
+    The files are first moved into a temporary folder next to them. A file another program keeps open (e.g.
+    exported statistics in a spreadsheet, the log of the session open in another window) can neither be moved
+    nor deleted on Windows: the files moved so far are then put back and the session stays complete.
 
     Raises:
-        OSError: If a file could not be removed.
+        OSError: If a file could not be moved (nothing is deleted).
         ValueError: If 'csv_path' is not a session CSV.
 
     Returns:
         The paths that were removed.
     """
-    removed = []
-    for path in session_files(csv_path):
-        if path.is_dir():
-            shutil.rmtree(path)
-        else:
-            path.unlink()
-        removed.append(path)
-    logger.info("Session deleted: %s (%d paths)", Path(csv_path).name, len(removed))
-    return removed
+    paths = session_files(csv_path)
+    directory = Path(csv_path).parent
+    trash = Path(tempfile.mkdtemp(prefix=f".deleting_{Path(csv_path).name}_", dir=directory))
+    moved: list[Path] = []
+    for path in paths:
+        try:
+            path.rename(trash / path.name)
+        except OSError as e:
+            for done in reversed(moved):
+                (trash / done.name).rename(done)
+            trash.rmdir()
+            logger.warning("Session not deleted, '%s' could not be moved: %s", path, e)
+            raise OSError(f"'{path.name}' is in use by another program, nothing was deleted") from e
+        moved.append(path)
+    # The session is gone from the listing now; a file locked in the meantime only leaves the temporary folder
+    shutil.rmtree(trash, ignore_errors=True)
+    if trash.exists():
+        logger.warning("Session deleted, but '%s' could not be removed completely", trash.name)
+    logger.info("Session deleted: %s (%d paths)", Path(csv_path).name, len(paths))
+    return paths
 
 
 def source_csv_changed(session: Mapping[str, Any], current: Mapping[str, Any]) -> bool:
