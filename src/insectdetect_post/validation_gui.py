@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import html
 import logging
+import re
 import sys
 import time
 from collections.abc import Callable, Sequence
@@ -165,7 +166,11 @@ from insectdetect_post.validation_multi import (
     DIFFERENT_TAXA,
     FALSE_POSITIVE_DISPUTED,
     VALIDATION_CONFLICTS,
+    VerdictSelection,
     export_validated_sessions,
+    prefill_counts,
+    prefill_session,
+    prefill_sources,
     select_verdicts,
 )
 from insectdetect_post.validation_run import TrackKey, ValidationRun
@@ -285,6 +290,9 @@ _PREVIEW_DELAY_MS = 150
 # Setup page: start values of the duration filter for runs without their own (the processing defaults)
 _TRACK_FILTER_DEFAULTS = FilterTrackingConfig()
 
+# Setup page: start time at the end of a session's file stem (see new_validation_session_id())
+_STEM_TIME_RE = re.compile(r"(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})(-\d+)?$")
+
 # Setup page: how the verdicts of a track validated in several sessions differ (multi-session export)
 _CONFLICT_LABELS = {DIFFERENT_DEPTH: "different depth", DIFFERENT_TAXA: "different taxa",
                     FALSE_POSITIVE_DISPUTED: "'not an arthropod' disputed"}
@@ -325,12 +333,13 @@ _MAX_LISTED_CHILDREN = 3000
 
 # Track list: labels and tooltips of the filters (TrackListModel.FILTERS)
 _FILTER_LABELS = {
-    "all": "All", "todo": "To do", "link_candidates": "Link candidates", "done": "Validated", "agree": "Agreed",
-    "corrected": "Corrected", "indeterminate": "indet. / partial", "uncertain": "Uncertain (inc.)",
-    "false_positive": "False positive", "linked": "Same individual", "multiple": "Multiple individuals",
-    "low_quality": "Low quality",
+    "all": "All", "todo": "To do", "link_candidates": "Link candidates", "prefilled": "Pre-filled",
+    "done": "Validated", "agree": "Agreed", "corrected": "Corrected", "indeterminate": "indet. / partial",
+    "uncertain": "Uncertain (inc.)", "false_positive": "False positive", "linked": "Same individual",
+    "multiple": "Multiple individuals", "low_quality": "Low quality",
 }
 _FILTER_TOOLTIPS = {
+    "prefilled": "Tracks whose verdict, notes, flags or links were pre-filled from an earlier session",
     "link_candidates": (f"Tracks with another track up to {VALIDATION_SAME_INDIVIDUAL_WINDOW_S:g} s before or after "
                         "them - potentially the same individual"),
 }
@@ -658,6 +667,9 @@ class SetupPage(QWidget):
         self.taxonomy: TaxonomyIndex | None = None
         self._setting_counts = setting_counts(pl.DataFrame())
         self._sessions: dict[int, dict[str, Any]] = {}
+        self._prefill_loaded: dict[str, ValidationSession] = {}
+        self._prefill_selection: tuple[tuple[str, ...], VerdictSelection] | None = None
+        self._preview_keys: list[TrackKey] = []
         self._summary_error: str | None = None
         self._thread: QThread | None = None
         self._worker: RunLoadWorker | None = None
@@ -726,11 +738,11 @@ class SetupPage(QWidget):
         sessions_widget = QWidget()
         sessions_layout = QVBoxLayout(sessions_widget)
         sessions_layout.setContentsMargins(6, 6, 6, 6)
-        self.sessions_table = QTableWidget(0, 6)
+        self.sessions_table = QTableWidget(0, 7)
         self.sessions_table.setHorizontalHeaderLabels(
-            ["Validator", "Started", "Last update", "Validated / sampled", "Selection", "Subsample"]
+            ["Validator", "Started", "Last update", "Validated / sampled", "Selection", "Subsample", "Pre-filled from"]
         )
-        for col in (0, 1, 2, 3):
+        for col in (0, 1, 2, 3, 6):
             self.sessions_table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
         for col in (4, 5):  # the Selection and Subsample columns share the remaining width
             self.sessions_table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeMode.Stretch)
@@ -924,6 +936,28 @@ class SetupPage(QWidget):
         layout.addWidget(self.sampling_box)
         layout.addStretch(1)
 
+        # Pre-fill from earlier sessions of the validator (shown when there are some)
+        self.prefill_widget = QWidget()
+        prefill_row = QHBoxLayout(self.prefill_widget)
+        prefill_row.setContentsMargins(6, 0, 6, 0)
+        prefill_tooltip = ("Start the new session with your verdicts, notes, flags and links of the "
+                           "selected earlier sessions on the tracks it samples. A blind session can "
+                           "only be pre-filled from blind sessions.")
+        prefill_title = QLabel("Pre-fill new session from:")
+        prefill_title.setToolTip(prefill_tooltip)
+        prefill_row.addWidget(prefill_title)
+        self.prefill_sources_param = MultiComboParameter[str]("prefill_sources")
+        self.prefill_sources_param.combo.set_maximum_display_items(0)  # show every selected session
+        self.prefill_sources_param.set_placeholder("No pre-fill sessions selected")
+        self.prefill_sources_param.setToolTip(prefill_tooltip)
+        self.prefill_sources_param.value_changed.connect(lambda _: self._update_prefill_count())
+        prefill_row.addWidget(self.prefill_sources_param, 1)
+        self.prefill_count_label = QLabel("")
+        self.prefill_count_label.setWordWrap(True)
+        prefill_row.addWidget(self.prefill_count_label, 1)
+        self.prefill_widget.setVisible(False)
+        outer.addWidget(self.prefill_widget)
+
         # Start
         buttons = QHBoxLayout()
         buttons.setContentsMargins(6, 0, 6, 0)
@@ -953,6 +987,8 @@ class SetupPage(QWidget):
         self.run_param.value_changed.connect(self._on_run_path_change)
         # React per keystroke (value_changed fires only when editing is finished)
         self.validator_param.text.textChanged.connect(lambda _: self._update_start_state())
+        self.validator_param.text.textChanged.connect(lambda _: self._refresh_prefill_sources())
+        self.blind_param.value_changed.connect(lambda _: self._refresh_prefill_sources())
         self.filter_form.parameter_changed.connect(lambda _: self._preview_timer.start())
         self.sampling_form.parameter_changed.connect(lambda _: self._preview_timer.start())
         # The counts of each filter list follow the other filters
@@ -1203,6 +1239,7 @@ class SetupPage(QWidget):
                 f"{info['n_validated']} / {info['n_sampled']}",
                 _fmt_selection(sampling),
                 _fmt_subsample(sampling),
+                _fmt_prefilled_from(info["prefilled_from_sessions"]),
             ]
             tooltip = _session_tooltip(info)
             if stale:
@@ -1221,6 +1258,9 @@ class SetupPage(QWidget):
             "A resumed session keeps its own selection and subsample."
         )
         self._update_session_buttons()
+        # Sessions may have changed since they were loaded
+        self._prefill_loaded, self._prefill_selection = {}, None
+        self._refresh_prefill_sources()
 
     def _update_session_buttons(self) -> None:
         """Enable resume and the settings for one selected session, delete and the validated CSV also for several."""
@@ -1669,6 +1709,8 @@ class SetupPage(QWidget):
                  f"<b>{sampled.height}</b> of the {n_selected} selected tracks will be validated{strata_note}.")
                 + excluded_note
             )
+        self._preview_keys = [tuple(row) for row in sampled.select(TRACK_KEY_COLUMNS).iter_rows()]
+        self._update_prefill_count()
         self._update_start_state(sampled.height)
 
     def _validator_name(self) -> str:
@@ -1681,6 +1723,52 @@ class SetupPage(QWidget):
         if ready and n_sampled is not None:
             ready = n_sampled > 0
         self.start_btn.setEnabled(ready)
+
+    def _refresh_prefill_sources(self) -> None:
+        """List the sessions the new session can be pre-filled from; hide the row without any."""
+        if self.run is None:
+            return
+        eligible = prefill_sources(list(self._sessions.values()), self._validator_name(),
+                                   bool(self.blind_param.value()), self.run.final_provenance)
+        items = {_fmt_prefill_source(info): str(info["csv_path"]) for info in eligible}
+        if list(items.values()) != [value for _, value in self.prefill_sources_param.items()]:
+            self.prefill_sources_param.set_items(items)
+            self.prefill_sources_param.set_value([])
+        self.prefill_widget.setVisible(bool(items))
+        self._update_prefill_count()
+
+    def _prefill_sessions(self) -> list[ValidationSession]:
+        """Return the ticked sessions to pre-fill the new session from, latest start first (loaded once each)."""
+        if self.prefill_widget.isHidden():
+            return []
+        ticked = set(self.prefill_sources_param.value())
+        listed = [path for _, path in self.prefill_sources_param.items()]  # latest start first
+        sessions = []
+        for path in listed:
+            if path not in ticked:
+                continue
+            if path not in self._prefill_loaded:
+                try:
+                    self._prefill_loaded[path] = ValidationSession.load(Path(path))
+                except (OSError, ValueError) as e:
+                    logger.warning("Session not used for pre-filling: %s", e)
+                    continue
+            sessions.append(self._prefill_loaded[path])
+        return sessions
+
+    def _update_prefill_count(self) -> None:
+        """Show how many of the sampled tracks the ticked sessions pre-fill."""
+        sources = self._prefill_sessions()
+        if not sources:
+            self.prefill_count_label.setText("")
+            return
+        paths = tuple(str(source.csv_path) for source in sources)
+        if self._prefill_selection is None or self._prefill_selection[0] != paths:
+            self._prefill_selection = (paths, select_verdicts(sources))
+        n_validated, n_pending = prefill_counts(self._prefill_selection[1], self._preview_keys)
+        self.prefill_count_label.setText(
+            f"Pre-fills {n_validated} of the {len(self._preview_keys)} sampled tracks with a verdict"
+            + (f" and {n_pending} with notes, flags or links only" if n_pending else "") + ".")
 
     def _start_new(self) -> None:
         """Create, save and open a new session with the current settings."""
@@ -1700,6 +1788,10 @@ class SetupPage(QWidget):
         # Every session gets its own id and files
         session = ValidationSession.create(self.run, validator, sampled, cfg, self.taxonomy,
                                            blind=bool(self.blind_param.value()))
+        if sources := self._prefill_sessions():
+            prefill_session(session, sources, self.run)
+            for entry in session.meta["custom_taxa"]:
+                self.taxonomy.add_lineages([{r: entry.get(r) for r in VALIDATION_RANKS}], "free_text")
         _settings().setValue(_SETTINGS_KEY_VALIDATOR, validator)
         try:
             session.save()
@@ -2226,6 +2318,7 @@ class VerdictPanel(QWidget):
         self._syncing_links = False  # filling the link combo, not an edit
         self._link_order_hint = False  # list not in chronological order
         self._recent: list[Lineage] = []
+        self._prefill_note = ""  # where the shown track's entry was pre-filled from, see set_prefill_note()
         self._batch_counts = (0, 0)
         self._batch_link: tuple[bool, bool, str] | None = None  # link button for a selection, see set_batch_link()
         self._create_ui()
@@ -2901,12 +2994,19 @@ class VerdictPanel(QWidget):
         self._render_status()
         self._loading = was_loading
 
+    def set_prefill_note(self, note: str) -> None:
+        """Show where the shown track's entry was pre-filled from (empty: not pre-filled)."""
+        self._prefill_note = note
+        self._render_status()
+
     def _render_status(self) -> None:
-        """Show what the buttons do not: verdict type, agreement, qualifier mark, link conflict, free text."""
+        """Show what the buttons do not: verdict type, agreement, qualifier mark, link conflict, free text, pre-fill."""
         verdict_type, agree_rank, lowest = derive_verdict(self._model, self._verdict, self._model_rank)
+        prefill = f" · <i>{self._prefill_note}</i>" if self._prefill_note else ""
         if not self._verdict.validated:
-            self.status_label.setText(f"<span style='color:{_theme_color('subtext0', '#9E9E9E')}'>Not validated</span>")
-            self.status_label.setToolTip("")
+            self.status_label.setText(f"<span style='color:{_theme_color('subtext0', '#9E9E9E')}'>Not validated</span>"
+                                      + prefill)
+            self.status_label.setToolTip(self._prefill_note)
             return
         color = COLOR_VERDICT.get(verdict_type or "", "#9E9E9E")
         text = f"<b style='color:{color}'>{VERDICT_LABELS.get(verdict_type or '', verdict_type)}</b>"
@@ -2923,6 +3023,7 @@ class VerdictPanel(QWidget):
                      f"{conflict[3]} ({conflict[1]})</b>")
         if self._verdict.val_source == "free_text":
             text += " · <i>contains free-text taxon</i>"
+        text += prefill
         self.status_label.setText(text)
         self.status_label.setToolTip(QTextDocumentFragment.fromHtml(text).toPlainText())
 
@@ -3872,6 +3973,14 @@ class ValidationPage(QWidget):
         self._close_session_log()
         self.back_requested.emit()
 
+    def _show_prefill_note(self, key: TrackKey) -> None:
+        """Tell the verdict panel where the track's entry was pre-filled from (kept by the session, not the panel)."""
+        entry = self.session.verdict(key) if self.session is not None else None
+        note = ""
+        if entry is not None and entry.prefilled_from:
+            note = f"pre-filled from {entry.prefilled_from}" + (" (edited)" if entry.prefill_edited else "")
+        self.verdict_panel.set_prefill_note(note)
+
     def _status_of(self, key: TrackKey) -> RowStatus:
         """Return the RowStatus of a track for the track list."""
         if self.session is None or self.run is None:
@@ -3889,12 +3998,14 @@ class ValidationPage(QWidget):
         if not verdict.validated:
             return RowStatus(None, verdict.image_quality == "low",
                              has_qualifier(verdict.qualifier, ID_QUALIFIER_INC),
-                             verdict.multiple_individuals, linked, continued, individual, n_individual, candidate)
+                             verdict.multiple_individuals, linked, continued, individual, n_individual, candidate,
+                             verdict.prefilled_from, verdict.prefill_edited)
         verdict_type, _, lowest = self.session.derived(key)
         return RowStatus(verdict_type, verdict.image_quality == "low",
                          bool(has_qualifier(verdict.qualifier, ID_QUALIFIER_INC) and lowest),
                          verdict.multiple_individuals if not verdict.false_positive else None,
-                         linked, continued, individual, n_individual, candidate)
+                         linked, continued, individual, n_individual, candidate,
+                         verdict.prefilled_from, verdict.prefill_edited)
 
     def _apply_list_filter(self, *_args: Any) -> None:
         """Apply the list filter and search, keeping the shown track selected."""
@@ -3975,6 +4086,7 @@ class ValidationPage(QWidget):
         self._update_link_highlight()
         self.verdict_panel.load(model, self.session.verdict(key), self.session.model_rank,
                                 self.session.recent_lineages())
+        self._show_prefill_note(key)
         self._sync_blind_visibility()
         self._populate_comparison(key, row)
         self._load_crops(key)
@@ -4488,6 +4600,7 @@ class ValidationPage(QWidget):
             if existing is not None and existing.validated:
                 self.session.reset(self._current)  # verdict withdrawn, only notes/flags remain
             self.session.set_pending(self._current, verdict)
+        self._show_prefill_note(self._current)
         relinked = self._relink_around(self._current)
         self._shown_relinked = relinked
         if notes := self._relink_notes(relinked):
@@ -4559,6 +4672,7 @@ class ValidationPage(QWidget):
                                             order_hint=self.sort_combo.currentData() not in TrackListModel.CHRONO_SORTS)
         self.verdict_panel.load(self.session.model_lineage(key), self.session.verdict(key), self.session.model_rank,
                                 self.session.recent_lineages())
+        self._show_prefill_note(key)
         self._sync_blind_visibility()
         self._populate_comparison(key, self.run.track_row(key) or {})
 
@@ -4889,7 +5003,8 @@ class StatsDialog(QDialog):
             except (OSError, ValueError):
                 continue
             others.append((other.validator, other.stem, other.to_frame()))
-        self.session_comparison = compare_sessions(self.frame, session.validator, others, self.model_rank)
+        self.session_comparison = compare_sessions(self.frame, session.validator, others, self.model_rank,
+                                                   stem=session.stem)
         sampling = session.meta["sampling"]
         self.prob_edges = list(sampling.get("prob_edges") or VALIDATION_PROB_BIN_EDGES_DEFAULT)
         self.setWindowTitle(f"Validation statistics - {session.validator} ({session.validation_session_id})")
@@ -4997,8 +5112,12 @@ class StatsDialog(QDialog):
         n_detected = self._n_detected()
         effort = effort_summary(frame).to_dicts()[0]
         median = effort["median_seconds"]
+        prefilled = frame.filter(pl.col("validated") & pl.col("prefilled_from").is_not_null())
+        n_edited = prefilled.filter(pl.col("prefill_edited")).height
         self.header_label.setText(
             f"<b>{validated}</b> of {total} sampled tracks validated"
+            + (f" ({prefilled.height} pre-filled from earlier sessions, {n_edited} of them edited)"
+               if prefilled.height else "")
             + (f" ({n_detected} arthropod tracks of {n_ind} individuals)" if n_ind != n_detected else "")
             + f" · {n_inc} uncertain (inc.){' (excluded)' if not include_inc and n_inc else ''}"
             f" · {in_crops} different taxa in crops · {in_track} different taxa in track · {low} low image quality"
@@ -5007,6 +5126,8 @@ class StatsDialog(QDialog):
             f" · model rank <b>{self.model_rank}</b>"
             + (" · <b>blind</b> session" if self.session.blind else "")
             + f" · effort {effort['total_minutes']} min"
+            + (f" (incl. {effort['prefilled_minutes']} min on pre-filled tracks in earlier sessions)"
+               if effort["prefilled_minutes"] else "")
             + (f" (median {median:.0f} s per track)" if median is not None else "")
         )
         agreement = agreement_by_rank(frame, self.model_rank, include_low, include_inc)
@@ -5293,7 +5414,7 @@ class StatsDialog(QDialog):
                 "selection": _fmt_selection(meta["sampling"], full=True),
                 "subsample": _fmt_subsample(meta["sampling"], full=True),
                 **{key: meta[key] for key in ("sampling", "n_population_selected", "strata_excluded",
-                                              "strata_population")},
+                                              "strata_population", "prefilled_from_sessions")},
                 # The population the weighted estimates refer to
                 "n_population_sampled_strata": sum(meta["strata_population"].values()),
             }
@@ -5527,8 +5648,30 @@ def _session_tooltip(info: dict[str, Any]) -> str:
         f"Progress: {info['n_validated']} of {info['n_sampled']} sampled tracks validated",
         f"Selection: {_fmt_selection(sampling, full=True)}",
         f"Subsample: {_fmt_subsample(sampling, full=True)}",
+        *([f"Pre-filled from: {', '.join(sources)}"] if (sources := info["prefilled_from_sessions"]) else []),
         f"File: {Path(info['csv_path']).name}",
     ])
+
+
+def _fmt_prefill_source(info: dict[str, Any]) -> str:
+    """Return a session offered for pre-filling by its start time, as in the sessions table."""
+    return _fmt_time(info["started"]) + (" (blind)" if info["blind"] else "")
+
+
+def _fmt_stem_time(stem: str) -> str:
+    """Return the start time in a session's file stem ('<validator>_<started>'), as in the table, else the stem."""
+    match = _STEM_TIME_RE.search(stem)
+    return f"{match[1]} {match[2]}:{match[3]}:{match[4]}{match[5] or ''}" if match else stem
+
+
+def _fmt_prefilled_from(stems: Sequence[str]) -> str:
+    """Return the sources of a pre-filled session for its table cell: the latest one, then '+N more'.
+
+    The full list is in the row tooltip (see _session_tooltip()), like the full selection.
+    """
+    if not stems:
+        return ""
+    return _fmt_stem_time(stems[0]) + (f" +{len(stems) - 1} more" if len(stems) > 1 else "")
 
 
 def _fmt_conflict_counts(counts: dict[str, int], n_several: int | None = None) -> str:

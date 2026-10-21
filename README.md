@@ -491,6 +491,14 @@ the same validator or as agreement between validators.
 - **Splitting one design** - create one session as a template, then start each part with
   `Use these settings` and add only a taxa filter, at the rank of the strata. With the same strata and
   seed, every part samples exactly the tracks the whole design would have sampled for its taxa.
+- **Pre-filling a new session** - pick sessions in `Pre-fill new session from:` above `Start new validation
+  session` to start with your verdicts, notes, flags and links of those sessions (the latest wins)
+  on the tracks the new session samples. The sample itself stays the same, and a blind session can only
+  be pre-filled from blind sessions. For example, link the individuals of a whole run in one session,
+  then start subsamples with the links in place, or take a larger subsample with the same strata and
+  seed: it contains the smaller one, whose verdicts arrive pre-filled. Pre-filled tracks are marked
+  (filter `Pre-filled`) and stay validated, a changed one counts as edited. The sessions table names the
+  sources of a pre-filled session (`Pre-filled from`).
 - **One validated CSV** - select the sessions with Ctrl- or Shift-click and press `Export validated CSV`.
   The dialog lists them by start time, latest first: a track validated in several sessions gets the
   verdict of the highest one (*priority*, move a session up to let it win, e.g. an expert's session
@@ -520,6 +528,9 @@ sessions validated the track) and `validation_conflict` (how their verdicts diff
   `validation_session` tell them apart.
 - The CSV is a snapshot of the sessions at the moment of the export: verdicts added or changed later
   are only included after exporting again.
+- A pre-filled verdict that was not changed counts as the verdict of its source session when both are
+  exported together. A track reset in one session has no verdict there, so another session's verdict
+  applies to it.
 - Use the same validator name in every session of one person: the `validator` column and
   `provenance.json` name each person by it, so two spellings look like two validators.
 

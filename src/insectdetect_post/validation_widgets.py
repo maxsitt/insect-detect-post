@@ -754,6 +754,8 @@ class RowStatus(NamedTuple):
         individual: Track ID naming the individual, None without links.
         n_individual: Tracks of that individual (0 without links).
         link_candidate: An earlier or later track of the queue could be linked (neither a false positive).
+        prefilled_from: Stem of the session the track's entry was pre-filled from, or None.
+        prefill_edited: The pre-filled entry was changed since.
     """
     verdict: str | None = None
     low_quality: bool = False
@@ -764,6 +766,8 @@ class RowStatus(NamedTuple):
     individual: str | None = None
     n_individual: int = 0
     link_candidate: bool = False
+    prefilled_from: str | None = None
+    prefill_edited: bool = False
 
 
 def parse_search(query: str) -> list[tuple[str | None, str]]:
@@ -827,8 +831,8 @@ class TrackListModel(QAbstractListModel):
     """
 
     KeyRole = Qt.ItemDataRole.UserRole + 1
-    FILTERS = ("all", "todo", "link_candidates", "done", "agree", "corrected", "indeterminate", "uncertain",
-               "false_positive", "linked", "multiple", "low_quality")
+    FILTERS = ("all", "todo", "link_candidates", "prefilled", "done", "agree", "corrected", "indeterminate",
+               "uncertain", "false_positive", "linked", "multiple", "low_quality")
     # Sort mode -> (row field, descending); ties see _tie_break()
     NUMERIC_SORTS: ClassVar[dict[str, tuple[str, bool]]] = {
         "prob_desc": ("prob", True),
@@ -914,6 +918,8 @@ class TrackListModel(QAbstractListModel):
         if mode == "multiple" and not status.multiple:
             return False
         if mode == "low_quality" and not status.low_quality:
+            return False
+        if mode == "prefilled" and not status.prefilled_from:
             return False
         if self._terms:
             # Blind: the hidden prediction is not searchable
@@ -1005,6 +1011,8 @@ class TrackListModel(QAbstractListModel):
                        if status.individual else "")
                     + (f"\nSame individual as ID {status.linked.replace(';', ', ')}" if status.linked else "")
                     + (f"\nContinued by ID {status.continued.replace(';', ', ')}" if status.continued else "")
+                    + (f"\nPre-filled from {status.prefilled_from}{' (edited)' if status.prefill_edited else ''}"
+                       if status.prefilled_from else "")
                     + (f"\n\n{candidate_tip}" if candidate_tip else ""))
         if role == Qt.ItemDataRole.ForegroundRole:
             if status.verdict in COLOR_VERDICT:

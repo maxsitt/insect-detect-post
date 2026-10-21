@@ -1,4 +1,4 @@
-"""Several validation sessions of one run: one verdict per track and the multi-session validated export.
+"""Several validation sessions of one run: one verdict per track, the multi-session export and pre-filling.
 
 Source:   https://github.com/maxsitt/insect-detect-post
 License:  GNU AGPLv3 (https://choosealicense.com/licenses/agpl-3.0/)
@@ -12,6 +12,11 @@ the verdict of the first of them ('priority'), or the deepest taxon all of them 
 first session either way. The export copies the session files into its folder first and reads them from
 there, so the folder holds the exact input of its CSV.
 
+A new session can be pre-filled with the validator's own entries of earlier sessions (a blind session only
+from blind ones) on the tracks it samples, by the same priority rule, latest session first. Same-individual
+links become every earlier track of the individual. An entry pre-filled from one of the given sessions and
+not edited since counts as its source wherever verdicts are chosen, so it is never a second verdict.
+
 Classes:
     SelectedVerdict: The verdict chosen for one track, with the sessions it comes from.
     VerdictSelection: One verdict per track of several sessions.
@@ -20,6 +25,9 @@ Classes:
 Functions:
     select_verdicts(): One verdict per track from sessions in priority order.
     export_validated_sessions(): Validated CSV of several sessions, with conflicts, provenance and session copies.
+    prefill_sources(): Earlier sessions a new session can be pre-filled from.
+    prefill_counts(): Tracks a selection pre-fills.
+    prefill_session(): Pre-fill a new session with the entries of earlier sessions.
 """
 
 from __future__ import annotations
@@ -27,7 +35,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -52,6 +60,7 @@ from insectdetect_post.validation_session import (
     now_iso,
     parse_links,
     session_files,
+    sort_tracks_chronologically,
     source_csv_changed,
     validated_frame,
     verdict_columns,
@@ -259,15 +268,91 @@ def export_validated_sessions(
     return MultiExport(folder, csv_path, counts, taxonomy_differs)
 
 
+def prefill_sources(infos: Sequence[dict[str, Any]], validator: str, blind: bool,
+                    final_provenance: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Return the sessions a new session can be pre-filled from, latest start first.
+
+    Sessions of the same validator (ignoring case and surrounding spaces) whose run has not changed since they
+    started; a blind new session takes only blind sessions, whose verdicts were made without the model's
+    prediction.
+
+    Args:
+        infos: list_sessions() entries of the run.
+        validator: Validator of the new session.
+        blind: Whether the new session is blind.
+        final_provenance: 'final_provenance' of the opened run.
+
+    Returns:
+        The eligible list_sessions() entries.
+    """
+    name = validator.strip().casefold()
+    eligible = [info for info in infos if str(info["validator"]).strip().casefold() == name
+                and not source_csv_changed(info, final_provenance) and (info["blind"] or not blind)]
+    return sorted(eligible, key=lambda info: str(info["started"]), reverse=True)
+
+
+def prefill_counts(selection: VerdictSelection, keys: Iterable[TrackKey]) -> tuple[int, int]:
+    """Return how many of 'keys' a selection pre-fills with a verdict, and with notes, flags or links only."""
+    entries = [sel.verdict for key in keys if (sel := selection.verdicts.get(key)) is not None]
+    n_validated = sum(1 for entry in entries if entry.validated)
+    return n_validated, len(entries) - n_validated
+
+
+def prefill_session(session: ValidationSession, sources: Sequence[ValidationSession],
+                    run: ValidationRun) -> tuple[int, int]:
+    """Pre-fill a new session with the entries of earlier sessions on its sampled tracks.
+
+    Each sampled track takes the entry of the latest source that has one (see select_verdicts(), a verdict
+    before notes, flags or links alone), with its time and effort. Its same-individual links are replaced by
+    every earlier track of the individual, which the links of the chosen entries form together (also those of
+    tracks outside the new sample), so that a chain through a track the new sample does not contain stays one
+    individual. Tracks outside the new sample are not added: the sample stays the one the session was drawn with.
+
+    Args:
+        session: New session (not validated yet).
+        sources: Earlier sessions of the run, latest start first (see prefill_sources()).
+        run: Opened run (start times of the tracks).
+
+    Returns:
+        The tracks pre-filled with a verdict, and with notes, flags or links only.
+    """
+    selection = select_verdicts(sources)
+    earlier = _earlier_tracks(selection, run)
+    queue = session.keys()
+    for key in queue:
+        sel = selection.verdicts.get(key)
+        if sel is None:
+            continue
+        verdict = sel.verdict.copy()
+        if not verdict.false_positive and key in earlier:
+            verdict.same_individual_as = join_links(earlier[key])
+        verdict.seconds = sel.session.seconds_spent(key) or 0.0
+        session.add_prefilled(key, verdict, sel.session.stem)
+    session.meta["prefilled_from_sessions"] = [source.stem for source in sources]
+    for source in sources:
+        for entry in source.meta["custom_taxa"]:
+            session.add_custom_taxon(entry["rank"], entry)
+    n_validated, n_pending = prefill_counts(selection, queue)
+    logger.info("Session pre-filled from %d sessions: %d tracks with a verdict, %d with notes, flags or links",
+                len(sources), n_validated, n_pending)
+    return n_validated, n_pending
+
+
 def _entries_by_key(sessions: Sequence[ValidationSession]) -> dict[TrackKey, list[tuple[ValidationSession, Verdict]]]:
-    """Return the stored entries (validated or pending) of every track, in session priority order."""
+    """Return the stored entries (validated or pending) of every track, in session priority order.
+
+    An entry pre-filled from one of the given sessions and not edited since is left out: it counts as its source,
+    whose current entry applies (also none, if the source no longer has one).
+    """
+    stems = {session.stem for session in sessions}
     entries: dict[TrackKey, list[tuple[ValidationSession, Verdict]]] = {}
     for session in sessions:
         queue = session.keys()
         for key in queue:
             entry = session.verdict(key)
-            if entry is not None:
-                entries.setdefault(key, []).append((session, entry))
+            if entry is None or (entry.prefilled_from in stems and not entry.prefill_edited):
+                continue
+            entries.setdefault(key, []).append((session, entry))
     return entries
 
 
@@ -445,3 +530,34 @@ def _custom_taxa(sessions: Sequence[ValidationSession]) -> list[dict[str, Any]]:
     for session in sessions:
         taxa.extend(entry for entry in session.meta["custom_taxa"] if entry not in taxa)
     return taxa
+
+
+def _earlier_tracks(selection: VerdictSelection, run: ValidationRun) -> dict[TrackKey, list[str]]:
+    """Return the IDs of the earlier tracks of every track of a linked individual (from the chosen entries' links).
+
+    The individuals are formed by the links of all chosen entries together (false positives are no member);
+    a track's earlier tracks are those before it in time order (see sort_tracks_chronologically()).
+    """
+    parent: dict[TrackKey, TrackKey] = {}
+
+    def find(key: TrackKey) -> TrackKey:
+        parent.setdefault(key, key)
+        while parent[key] != key:
+            parent[key] = parent[parent[key]]
+            key = parent[key]
+        return key
+
+    for key, sel in selection.verdicts.items():
+        if not sel.verdict.false_positive:
+            for track_id in parse_links(sel.verdict.same_individual_as):
+                parent[find(key)] = find((key[0], key[1], track_id))
+    groups: dict[TrackKey, list[TrackKey]] = {}
+    for key in list(parent):
+        groups.setdefault(find(key), []).append(key)
+    earlier: dict[TrackKey, list[str]] = {}
+    for members in groups.values():
+        ordered = sort_tracks_chronologically(members, run.track_start_times)
+        for i, key in enumerate(ordered):
+            if i:
+                earlier[key] = [member[2] for member in ordered[:i]]
+    return earlier

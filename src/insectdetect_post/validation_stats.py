@@ -124,7 +124,8 @@ STATS_COLUMN_DESCRIPTIONS = {
     "n_not_assessable": "Tracks with low image quality or different taxa (in the crops or along the track); in the "
                         "other counts only if the export settings include them",
     "n_human": "Tracks the validator determined as this taxon (recall denominator)",
-    "n_shared": "Tracks both sessions validated (at a rank: both named a taxon there)",
+    "n_shared": "Tracks both sessions validated independently, i.e. not pre-filled from the other session "
+                "(at a rank: both named a taxon there)",
     "share": "Share of the validated tracks: n_tracks / n_validated",
     "share_weighted": "Share estimated for the tracks of the sampled strata: every stratum with validated tracks counts with "
         "its population size",
@@ -605,23 +606,34 @@ def compare_sessions(
     validator: str,
     others: Sequence[tuple[str, str, pl.DataFrame]],
     model_rank: str,
+    stem: str | None = None,
 ) -> pl.DataFrame:
     """Return the agreement of a session with every other session of the run.
+
+    Tracks one session pre-filled from the other are left out of their comparison, also once edited: the
+    validator saw the other session's entry, so the two are no independent assessments.
 
     Args:
         frame: Session table.
         validator: Validator of the session.
         others: '(validator, file stem, session table)' of the other sessions (see ValidationSession.stem).
         model_rank: Deepest rank of the run.
+        stem: File stem of the session.
 
     Returns:
         'other_session, comparison, level, n_shared, n_agree, share_agree, kappa, kappa_ci_low,
         kappa_ci_high'; 'comparison' tells another validator from the same one (test-retest).
     """
+    def independent(table: pl.DataFrame, source: str | None) -> pl.DataFrame:
+        if source is None or "prefilled_from" not in table.columns:
+            return table
+        return table.filter(pl.col("prefilled_from").fill_null("") != source)
+
     columns = ["other_session", "comparison", "level", "n_shared", "n_agree", "share_agree", "kappa",
                "kappa_ci_low", "kappa_ci_high"]
     rows = [
-        inter_validator_agreement(frame, other_frame, model_rank).with_columns(
+        inter_validator_agreement(independent(frame, other_stem), independent(other_frame, stem),
+                                  model_rank).with_columns(
             pl.lit(other_stem).alias("other_session"),
             pl.lit("same validator (test-retest)" if other_validator == validator else "other validator")
             .alias("comparison"),
@@ -671,11 +683,14 @@ def linked_track_conflicts(frame: pl.DataFrame) -> pl.DataFrame:
 
 
 def effort_summary(frame: pl.DataFrame) -> pl.DataFrame:
-    """Return the validation effort: tracks, total minutes, mean and median seconds per track."""
+    """Return the validation effort: tracks, total minutes (and those spent in earlier sessions on pre-filled
+    tracks), mean and median seconds per track."""
     seconds = pl.col("seconds_spent").cast(pl.Float64)
+    prefilled = pl.col("prefilled_from").is_not_null() if "prefilled_from" in frame.columns else pl.lit(False)
     return frame.filter(pl.col("validated") & pl.col("seconds_spent").is_not_null()).select(
         pl.len().cast(pl.Int64).alias("n_validated"),
         (seconds.sum() / 60).round(1).alias("total_minutes"),
+        (seconds.filter(prefilled).sum() / 60).round(1).alias("prefilled_minutes"),
         seconds.mean().round(1).alias("mean_seconds"),
         seconds.median().round(1).alias("median_seconds"),
     )
@@ -701,9 +716,12 @@ def session_summary(frame: pl.DataFrame) -> dict[str, Any]:
     """Return the key figures of a session: sample, verdict counts, flags and validation effort."""
     validated = frame.filter(pl.col("validated"))
     effort = effort_summary(frame).row(0, named=True)
+    prefilled = validated.filter(pl.col("prefilled_from").is_not_null()) if "prefilled_from" in frame.columns else None
     return {
         "n_sampled": frame.height,
         "n_validated": validated.height,
+        "n_prefilled": prefilled.height if prefilled is not None else 0,
+        "n_prefill_edited": prefilled.filter(pl.col("prefill_edited")).height if prefilled is not None else 0,
         "n_false_positive": validated.filter(pl.col("verdict") == "false_positive").height,
         "n_individuals": n_individuals(frame),
         "n_low_quality": n_low_quality(frame),
@@ -715,6 +733,7 @@ def session_summary(frame: pl.DataFrame) -> dict[str, Any]:
         "n_strata_unvalidated": unvalidated_strata(frame).height,
         "validated_in_queue_order": validated_in_queue_order(frame),
         "effort_total_minutes": effort["total_minutes"],
+        "effort_prefilled_minutes": effort["prefilled_minutes"],
         "effort_median_seconds": effort["median_seconds"],
     }
 

@@ -133,18 +133,21 @@ _VERDICT_COLUMNS = [
     "image_quality", "image_quality_reason", "multiple_individuals", "same_individual_as",
     *[f"val_{r}" for r in _RANKS_CSV],
     "val_lowest_rank", "val_qualifier", "val_sex", "val_source", "agree_rank", "notes",
-    "seconds_spent",
+    "seconds_spent", "prefilled_from", "prefill_edited",
 ]
 
 # Model columns copied into the session CSV
 _MODEL_COLUMNS = ["model_rank", "pred", "pred_prob_weighted", *[f"pred_{r}" for r in _RANKS_CSV]]
+
+# Verdict fields that are no judgement of the validator (compared when a pre-filled entry changes)
+_NO_JUDGEMENT_FIELDS = ("validated_at", "val_source", "seconds", "prefilled_from", "prefill_edited")
 
 # Required keys of the session JSON (written by ValidationSession.create())
 _META_KEYS = frozenset({
     "validator", "validation_session_id", "started", "updated", "app_version", "blind",
     "run_name", "run_root", "final_csv", "taxonomy", "model_rank", "n_tracks_classified", "run_filters",
     "n_population_total", "sampling", "n_population_selected", "strata_excluded", "strata_population", "n_sampled",
-    "n_validated",
+    "n_validated", "prefilled_from_sessions",
     "custom_taxa", "ui",
 })
 
@@ -237,6 +240,8 @@ class Verdict:
     sex: str | None = None  # 'female' or 'male'
     notes: str = ""
     seconds: float = 0.0  # validation effort (managed by the session)
+    prefilled_from: str | None = None  # stem of the session it was pre-filled from (managed by the session)
+    prefill_edited: bool = False  # judgement changed by the validator since it was pre-filled
 
     def copy(self) -> Verdict:
         """Return an independent copy (including the lineage dict)."""
@@ -485,7 +490,8 @@ class ValidationSession:
             stem = json_path.name.removesuffix(_SESSION_JSON_SUFFIX)
             result.append({
                 **{key: meta[key] for key in ("validator", "validation_session_id", "started", "updated", "blind",
-                                              "final_csv", "sampling", "n_sampled", "n_validated")},
+                                              "final_csv", "sampling", "n_sampled", "n_validated",
+                                              "prefilled_from_sessions")},
                 "csv_path": json_path.with_name(f"{stem}{_SESSION_CSV_SUFFIX}"),
             })
         result.sort(key=lambda s: s["updated"], reverse=True)
@@ -567,6 +573,8 @@ class ValidationSession:
             "strata_population": {d["stratum_id"]: d["stratum_n_population"] for d in stratum_pop},
             "n_sampled": base.height,
             "n_validated": 0,
+            # Earlier sessions this session was pre-filled from (see validation_multi.prefill_session())
+            "prefilled_from_sessions": [],
             # State
             "custom_taxa": [],
             "ui": {},
@@ -633,6 +641,8 @@ class ValidationSession:
                 sex=row.get("val_sex") or None,
                 notes=row.get("notes") or "",
                 seconds=float(row.get("seconds_spent") or 0.0),
+                prefilled_from=row.get("prefilled_from") or None,
+                prefill_edited=str(row.get("prefill_edited") or "").lower() == "true",
             ))
         session._recent = None  # rebuilt on first use
         logger.info("Loaded session '%s': %d/%d tracks validated", csv_path.name, session.progress()[0], base.height)
@@ -747,9 +757,12 @@ class ValidationSession:
         return [dict(lineage) for lineage in self._recent[:limit]]
 
     def set_verdict(self, key: TrackKey, verdict: Verdict) -> None:
-        """Store a verdict and mark the track validated. 'seconds' is kept by the session."""
+        """Store a verdict and mark the track validated. 'seconds' and the pre-fill fields are kept by the session."""
         previous = self.verdicts.get(key)
         verdict.validated = True
+        self._update_prefill(previous, verdict)
+        if previous is not None and verdict.prefilled_from and not verdict.prefill_edited:
+            verdict.validated_at = previous.validated_at  # confirmed unchanged: still the pre-filled verdict
         verdict.validated_at = verdict.validated_at or now_iso()
         verdict.seconds = (previous.seconds if previous else 0.0) + self._pending_seconds.pop(key, 0.0)
         self._store(key, verdict)
@@ -762,6 +775,7 @@ class ValidationSession:
         if entry is not None and entry.validated:
             if entry.notes != notes:
                 entry.notes = notes
+                entry.prefill_edited = entry.prefill_edited or entry.prefilled_from is not None
                 self.unsaved = True
             return
         pending = entry.copy() if entry is not None else Verdict(validated=False)
@@ -791,11 +805,28 @@ class ValidationSession:
         pending.validated = False
         pending.validated_at = None
         pending.seconds = entry.seconds if entry is not None else 0.0
+        self._update_prefill(entry, pending)
         if entry is not None and entry == pending:
             return False
         self._store(key, pending)
         self.unsaved = True
         return True
+
+    def add_prefilled(self, key: TrackKey, verdict: Verdict, source: str) -> None:
+        """Store the verdict or pending entry of an earlier session as the starting point of a track.
+
+        It keeps its time and effort, and counts as edited once the validator changes its judgement.
+
+        Args:
+            key: Track key.
+            verdict: Entry of the earlier session.
+            source: Stem of the earlier session.
+        """
+        entry = verdict.copy()
+        entry.prefilled_from, entry.prefill_edited = source, False
+        self._store(key, entry)
+        self._log("prefilled", key, entry)
+        self.unsaved = True
 
     def reset(self, key: TrackKey) -> None:
         """Remove the human verdict of a track."""
@@ -885,6 +916,18 @@ class ValidationSession:
         logger.info("Validated export written: %s", out_path)
         return out_path
 
+    @staticmethod
+    def _update_prefill(previous: Verdict | None, verdict: Verdict) -> None:
+        """Keep the pre-fill source of a track on its new entry, and mark it edited once its judgement changed.
+
+        The session keeps these fields, not the caller: the GUI hands in new verdicts without them (one-click
+        verdicts) and stores an entry again after removing it (a withdrawn verdict, which is an edit).
+        """
+        source = previous.prefilled_from if previous is not None else verdict.prefilled_from
+        verdict.prefilled_from = source
+        verdict.prefill_edited = source is not None and (
+            previous is None or previous.prefill_edited or not _same_judgement(previous, verdict))
+
     def _store(self, key: TrackKey, verdict: Verdict) -> None:
         """Store a verdict and update the indexes."""
         self._remove(key)
@@ -927,6 +970,8 @@ class ValidationSession:
                 "qualifier": verdict.qualifier, "sex": verdict.sex,
                 "notes": verdict.notes or None,
             })
+            if verdict.prefilled_from:
+                event.update({"prefilled_from": verdict.prefilled_from, "prefill_edited": verdict.prefill_edited})
         self._history.append(event)
 
 
@@ -971,6 +1016,8 @@ def verdict_columns(
         "agree_rank": agree_rank,
         "notes": (entry.notes or None) if entry else None,
         "seconds_spent": seconds,
+        "prefilled_from": entry.prefilled_from if entry else None,
+        "prefill_edited": entry.prefill_edited if entry and entry.prefilled_from else None,
     }
     for rank in VALIDATION_RANKS:
         row[f"val_{rank}"] = (verdict.val.get(rank) or None) if verdict and not verdict.false_positive else None
@@ -979,7 +1026,8 @@ def verdict_columns(
 
 def verdict_frame(rows: Sequence[Mapping[str, Any]]) -> pl.DataFrame:
     """Return verdict_columns() rows as a dataframe with the session CSV's verdict columns and types."""
-    schema = dict.fromkeys(_VERDICT_COLUMNS, pl.String) | {"validated": pl.Boolean, "seconds_spent": pl.Float64}
+    schema = dict.fromkeys(_VERDICT_COLUMNS, pl.String) | {"validated": pl.Boolean, "seconds_spent": pl.Float64,
+                                                           "prefill_edited": pl.Boolean}
     return pl.DataFrame(rows, schema=schema).select(_VERDICT_COLUMNS)
 
 
@@ -1234,6 +1282,12 @@ def app_version() -> str:
         return version("insect-detect-post")
     except PackageNotFoundError:
         return "unknown"
+
+
+def _same_judgement(a: Verdict, b: Verdict) -> bool:
+    """Return whether two entries hold the same judgement (ignoring time, effort, name source and pre-fill)."""
+    first, second = asdict(a), asdict(b)
+    return all(first[name] == second[name] for name in first if name not in _NO_JUDGEMENT_FIELDS)
 
 
 def _read_meta(json_path: Path) -> dict[str, Any]:
