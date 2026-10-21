@@ -451,7 +451,7 @@ guidelines and all keyboard shortcuts.
    track as not an arthropod (false positive) or not determinable. Qualifiers (uncertain, aggregate)
    and flags (same individual, multiple individuals, low image quality) record additional information.
    Select several tracks to handle them at once with batch verdicts/determinations.
-3. **Review the results** - view/export the statistics and export the merged results (see below).
+3. **Review the results** - view/export the statistics and export the validated CSV (see below).
 
 Your **verdict** follows from what you enter: *agree*, *partial* (confirmed, but not down to the rank the
 run was classified to), *corrected*, *not an arthropod* or *not determinable*. Every change is saved
@@ -464,7 +464,7 @@ automatically, so you can close the window at any time and resume the session la
   sessions of the run. Tracks with low image quality or different taxa are left out of the accuracies by
   default. For a stratified subsample, report the `_weighted` columns: they estimate the results for all
   tracks of the sampled strata, not only the sample. `Export statistics (CSV)` saves every table.
-- **`Export merged results`** - writes `..._classified_final_validated_<validator>_<started>.csv` next to
+- **`Export validated CSV`** - writes `..._classified_final_validated_<validator>_<started>.csv` next to
   the final CSV: every track of the run with your verdict and determination, plus `combined_<rank>` -
   your taxon for validated tracks, none for false positives, the model's for all other tracks
   (`combined_source` tells which). Tracks linked as the same individual share an `individual_id`.

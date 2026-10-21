@@ -1,4 +1,4 @@
-"""Validation session: verdicts, persistence, resume and merged export.
+"""Validation session: verdicts, persistence, resume and validated export.
 
 Source:   https://github.com/maxsitt/insect-detect-post
 License:  GNU AGPLv3 (https://choosealicense.com/licenses/agpl-3.0/)
@@ -6,9 +6,9 @@ Author:   Maximilian Sittinger (https://github.com/maxsitt)
 AI use:   Developed with AI coding assistance, reviewed by the author
 Docs:     https://maxsitt.github.io/insect-detect-docs/
 
-A session is stored in the run's 'validation/' directory as '<validator>_<session_id>_validation.csv'
-(one row per sampled track) and '<validator>_<session_id>_validation.json' (sampling, provenance, UI state),
-both rewritten atomically on every save. The session ID is the creation time.
+A session is stored in the run's 'validation/' directory as '<validator>_<started>_validation.csv'
+(one row per sampled track) and '<validator>_<started>_validation.json' (sampling, provenance, UI state),
+both rewritten atomically on every save. The validation session ID '<started>' is the start time.
 
 Fields added later to the session files get a default when an older session is read (sampling fields
 from SamplingConfig, top-level JSON keys from _META_DEFAULTS, verdict columns stay empty), so the
@@ -22,7 +22,7 @@ Classes:
 
 Functions:
     safe_validator_name(): Filename-safe validator name.
-    new_session_id(): ID of a new session.
+    new_validation_session_id(): ID of a new session.
     parse_links(), join_links(), with_link(): Read and edit 'same_individual_as' values.
     has_qualifier(), with_qualifier(), allowed_qualifier(), qualifier_mark(): Identification qualifiers.
     derive_verdict(): Verdict type, agreement rank and lowest determined rank.
@@ -86,7 +86,7 @@ _SESSION_LOG_SUFFIX = "_validation.log"
 _HISTORY_SUFFIX = "_history.jsonl"
 _EXPORT_SUFFIX = "_validated"
 
-# Session ID: the creation time (a counter is appended within the same second)
+# Validation session ID: the start time (a counter is appended within the same second)
 _SESSION_ID_FORMAT = "%Y-%m-%d_%H-%M-%S"
 
 # IDs issued in this process (a session reaches the disk only on its first save)
@@ -137,7 +137,7 @@ _MODEL_COLUMNS = ["model_rank", "pred", "pred_prob_weighted", *[f"pred_{r}" for 
 
 # Required keys of the session JSON (written by ValidationSession.create())
 _META_KEYS = frozenset({
-    "validator", "session_id", "created", "updated", "app_version", "blind",
+    "validator", "validation_session_id", "started", "updated", "app_version", "blind",
     "run_name", "run_root", "final_csv", "taxonomy", "model_rank", "n_tracks_classified", "run_filters",
     "n_population_total", "sampling", "n_population_selected", "strata_excluded", "strata_population", "n_sampled",
     "n_validated",
@@ -157,27 +157,27 @@ def safe_validator_name(name: str) -> str:
     return cleaned or "validator"
 
 
-def new_session_id(run_root: Path, validator: str, now: datetime | None = None) -> str:
-    """Return the ID of a new session of 'validator' in 'run_root': the creation time, never reused.
+def new_validation_session_id(run_root: Path, validator: str, now: datetime | None = None) -> str:
+    """Return the ID of a new session of 'validator' in 'run_root': the start time, never reused.
 
     Args:
         run_root: Run output root.
         validator: Validator name.
-        now: Creation time, defaults to the current local time.
+        now: Start time, defaults to the current local time.
 
     Returns:
-        Session ID, e.g. '2026-09-16_14-33-05'.
+        Validation session ID, e.g. '2026-09-16_14-33-05'.
     """
     stamp = (now or datetime.now()).strftime(_SESSION_ID_FORMAT)  # noqa: DTZ005
     directory = OutputLayout(Path(run_root)).validation_dir
     name = safe_validator_name(validator)
-    session_id, n = stamp, 1
-    while ((str(directory), f"{name}_{session_id}") in _ISSUED_SESSION_IDS
-           or (directory / f"{name}_{session_id}{_SESSION_CSV_SUFFIX}").exists()):
+    validation_session_id, n = stamp, 1
+    while ((str(directory), f"{name}_{validation_session_id}") in _ISSUED_SESSION_IDS
+           or (directory / f"{name}_{validation_session_id}{_SESSION_CSV_SUFFIX}").exists()):
         n += 1
-        session_id = f"{stamp}-{n}"
-    _ISSUED_SESSION_IDS.add((str(directory), f"{name}_{session_id}"))
-    return session_id
+        validation_session_id = f"{stamp}-{n}"
+    _ISSUED_SESSION_IDS.add((str(directory), f"{name}_{validation_session_id}"))
+    return validation_session_id
 
 
 @dataclass
@@ -424,14 +424,14 @@ class ValidationSession:
         return OutputLayout(Path(run_root)).validation_dir
 
     @property
-    def session_id(self) -> str:
-        """Creation time identifying the session."""
-        return str(self.meta["session_id"])
+    def validation_session_id(self) -> str:
+        """Start time identifying the session."""
+        return str(self.meta["validation_session_id"])
 
     @property
     def stem(self) -> str:
-        """Filename stem of the session files: '<validator>_<session_id>'."""
-        return f"{safe_validator_name(self.validator)}_{self.session_id}"
+        """Filename stem of the session files: '<validator>_<started>'."""
+        return f"{safe_validator_name(self.validator)}_{self.validation_session_id}"
 
     @property
     def csv_path(self) -> Path:
@@ -480,7 +480,7 @@ class ValidationSession:
                 continue
             stem = json_path.name.removesuffix(_SESSION_JSON_SUFFIX)
             result.append({
-                **{key: meta[key] for key in ("validator", "session_id", "created", "updated", "blind",
+                **{key: meta[key] for key in ("validator", "validation_session_id", "started", "updated", "blind",
                                               "final_csv", "sampling", "n_sampled", "n_validated")},
                 "csv_path": json_path.with_name(f"{stem}{_SESSION_CSV_SUFFIX}"),
             })
@@ -541,8 +541,8 @@ class ValidationSession:
         meta = {
             # Session
             "validator": validator,
-            "session_id": new_session_id(run.root, validator),
-            "created": _now_iso(),
+            "validation_session_id": new_validation_session_id(run.root, validator),
+            "started": _now_iso(),
             "updated": _now_iso(),
             "app_version": _app_version(),
             "blind": bool(blind),
@@ -892,7 +892,7 @@ class ValidationSession:
         self.unsaved = False
         logger.debug("Session saved: %s (%d/%d validated)", self.csv_path.name, self.progress()[0], frame.height)
 
-    def export_merged(self, run: ValidationRun, taxonomy: TaxonomyIndex | None = None) -> Path:
+    def export_validated(self, run: ValidationRun, taxonomy: TaxonomyIndex | None = None) -> Path:
         """Write the final CSV joined with the verdicts ('<final_stem>_validated_<stem>.csv').
 
         Adds 'combined_<rank>' (validator's names for validated tracks, indet. empty and an aggregate
@@ -907,17 +907,17 @@ class ValidationSession:
         frame = self.to_frame()
         join_cols = [*TRACK_KEY_COLUMNS, "stratum_id", "stratum_n_population", *_VERDICT_COLUMNS]
         # Rows in the order of the final CSV
-        merged = run.tracks.join(frame.select(join_cols), on=TRACK_KEY_COLUMNS, how="left", maintain_order="left")
-        merged = merged.with_columns(pl.col("validated").fill_null(False))
+        exported = run.tracks.join(frame.select(join_cols), on=TRACK_KEY_COLUMNS, how="left", maintain_order="left")
+        exported = exported.with_columns(pl.col("validated").fill_null(False))
 
         # The model's species in the form the validation compares on
-        model_species = (taxonomy or TaxonomyIndex()).canonical_species_expr(merged.columns)
+        model_species = (taxonomy or TaxonomyIndex()).canonical_species_expr(exported.columns)
         validated = pl.col("validated")
         false_positive = pl.col("verdict") == "false_positive"
         combined_cols = []
         for rank in _RANKS_CSV:
             model_col = f"bioclip_{rank}"
-            if model_col not in merged.columns:
+            if model_col not in exported.columns:
                 model_expr = pl.lit(None, dtype=pl.String)
             elif rank == "species":
                 model_expr = model_species
@@ -937,16 +937,16 @@ class ValidationSession:
                 .otherwise(model_expr)
                 .alias(f"combined_{rank}")
             )
-        merged = merged.with_columns(combined_cols).with_columns(
+        exported = exported.with_columns(combined_cols).with_columns(
             pl.when(false_positive).then(pl.lit("false_positive"))
             .when(validated).then(pl.lit("human"))
             .otherwise(pl.lit("model"))
             .alias("combined_source")
         )
-        merged = merged.join(individual_groups(merged), on=TRACK_KEY_COLUMNS, how="left", maintain_order="left")
+        exported = exported.join(individual_groups(exported), on=TRACK_KEY_COLUMNS, how="left", maintain_order="left")
         out_path = run.final_path.with_name(f"{run.final_path.stem}{_EXPORT_SUFFIX}_{self.stem}.csv")
-        merged.write_csv(out_path)
-        logger.info("Merged validation export written: %s", out_path)
+        exported.write_csv(out_path)
+        logger.info("Validated export written: %s", out_path)
         return out_path
 
     def _store(self, key: TrackKey, verdict: Verdict) -> None:
@@ -1017,7 +1017,7 @@ def session_files(csv_path: Path) -> list[Path]:
 
 
 def delete_session(csv_path: Path) -> list[Path]:
-    """Delete a session with its files (see session_files()), the merged export is kept.
+    """Delete a session with its files (see session_files()), the validated export is kept.
 
     Raises:
         OSError: If a file could not be removed.
@@ -1157,7 +1157,7 @@ def individual_groups(frame: pl.DataFrame) -> pl.DataFrame:
 def _read_meta(json_path: Path) -> dict[str, Any]:
     """Read a validation session JSON.
 
-    Keys and sampling fields added after the session was created get their defaults.
+    Keys and sampling fields added after the session was started get their defaults.
 
     Raises:
         ValueError: If it is missing or unreadable, lacks required keys (see _META_KEYS) or has sampling

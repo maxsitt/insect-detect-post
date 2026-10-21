@@ -388,7 +388,7 @@ list the alternatives. Click a crop to show its own prediction at the bottom, do
 <i>Compare with similar tracks</i> shows one crop of each related track, including the same linked individual,
 earlier tracks that could be linked, and tracks with the same prediction.</li>
 <li><b>Right: your verdict</b> - quick verdicts, the determination per rank, qualifiers, flags and notes.</li>
-<li><b>Top:</b> progress, <i>Statistics</i>, <i>Export merged results</i>, this help and <i>Back to setup</i>.</li>
+<li><b>Top:</b> progress, <i>Statistics</i>, <i>Export validated CSV</i>, this help and <i>Back to setup</i>.</li>
 </ul>
 
 <h3>For every track</h3>
@@ -478,7 +478,7 @@ Select tracks and press <b>L</b> to link them in time order as one individual, t
 
 <h3>Results</h3>
 <p><i>Statistics</i> compares the model&rsquo;s predictions with your determinations - accuracy per rank, per
-predicted taxon and per probability range - and exports the tables as CSV files. <i>Export merged results</i>
+predicted taxon and per probability range - and exports the tables as CSV files. <i>Export validated CSV</i>
 writes one CSV with every track of the run, your verdicts and determinations, and one combined taxon per track for
 further analysis: your determination for a validated track, otherwise the model prediction.</p>
 """
@@ -737,7 +737,7 @@ class SetupPage(QWidget):
         sessions_buttons.addWidget(self.use_settings_btn)
         self.delete_btn = StyledButton("Delete selected session", COLOR_BTN_CANCEL)
         self.delete_btn.setToolTip("Remove the session with its verdicts, history and exported statistics "
-                                   "(the merged export in the metadata directory is kept)")
+                                   "(the validated export in the metadata directory is kept)")
         self.delete_btn.clicked.connect(self._delete_selected)
         sessions_buttons.addWidget(self.delete_btn)
         sessions_buttons.addStretch()
@@ -1172,7 +1172,7 @@ class SetupPage(QWidget):
             stale = source_csv_changed(info, self.run.final_provenance)
             cells = [
                 str(info["validator"]) + ("   (blind)" if info["blind"] else ""),
-                ("⚠ " if stale else "") + _fmt_time(info["created"]),
+                ("⚠ " if stale else "") + _fmt_time(info["started"]),
                 _fmt_time(info["updated"]),
                 f"{info['n_validated']} / {info['n_sampled']}",
                 _fmt_selection(sampling),
@@ -1269,10 +1269,10 @@ class SetupPage(QWidget):
         listed = "\n".join(f"  {path.name}" for path in paths) or "  (no files left)"
         reply = QMessageBox.question(
             self, "Delete session",
-            f"Delete the session of '{info['validator']}' started {_fmt_time(info['created'])}?\n\n"
+            f"Delete the session of '{info['validator']}' started {_fmt_time(info['started'])}?\n\n"
             f"{info['n_validated']} of {info['n_sampled']} tracks are validated in it. "
             f"These files are removed permanently:\n{listed}\n\n"
-            "The merged export in the metadata directory is kept.",
+            "The validated export in the metadata directory is kept.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
@@ -1296,7 +1296,7 @@ class SetupPage(QWidget):
         if source_csv_changed(info, self.run.final_provenance) and QMessageBox.warning(
             self, "Run was processed again",
             f"'{self.run.final_path.name}' has changed since this session was started "
-            f"({_fmt_time(info['created'])}).\n\n"
+            f"({_fmt_time(info['started'])}).\n\n"
             "The sampled tracks may no longer be the ones the session refers to, and its statistics can be "
             "misleading. Resume anyway?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No,
@@ -3114,10 +3114,10 @@ class ValidationPage(QWidget):
         self.stats_btn = StyledButton("Statistics", COLOR_BTN_SAVE)
         self.stats_btn.clicked.connect(self.show_stats)
         top.addWidget(self.stats_btn)
-        self.export_btn = StyledButton("Export merged results", COLOR_BTN_RUN)
-        self.export_btn.setToolTip("Save the final CSV with your verdicts and determinations merged in "
+        self.export_btn = StyledButton("Export validated CSV", COLOR_BTN_RUN)
+        self.export_btn.setToolTip("Save the final CSV with your verdicts and determinations added "
                                    "(<final CSV>_validated_<validator>_<started>.csv, next to the run's final CSV)")
-        self.export_btn.clicked.connect(self.export_merged)
+        self.export_btn.clicked.connect(self.export_validated)
         top.addWidget(self.export_btn)
         self.help_btn = StyledButton("Help (F1)", COLOR_BTN_HELP)
         self.help_btn.clicked.connect(self.show_help)
@@ -3402,7 +3402,7 @@ class ValidationPage(QWidget):
         self._close_session_log()  # one log per open session
         self._session_log = open_session_log(session)
         logger.info("=" * 60)
-        logger.info("Validation session %s of '%s' opened by '%s'", session.session_id, run.root.name,
+        logger.info("Validation session %s of '%s' opened by '%s'", session.validation_session_id, run.root.name,
                     session.validator)
         self.run = run
         self.session = session
@@ -3604,20 +3604,20 @@ class ValidationPage(QWidget):
         dialog.deleteLater()  # tables, charts and the other sessions are not kept
 
     @Slot()
-    def export_merged(self) -> None:
-        """Save and write the merged export of the session."""
+    def export_validated(self) -> None:
+        """Save and write the validated export of the session."""
         if self.session is None or self.run is None:
             return
         self.save_now()
         try:
-            out_path = self.session.export_merged(self.run, self.taxonomy)
+            out_path = self.session.export_validated(self.run, self.taxonomy)
         except OSError as e:
             QMessageBox.critical(self, "Export failed", str(e))
             return
         validated, total = self.session.progress()
         QMessageBox.information(
             self, "Export written",
-            f"Merged results written to:\n{out_path}\n\n{validated} of {total} sampled tracks are validated; "
+            f"Validated CSV written to:\n{out_path}\n\n{validated} of {total} sampled tracks are validated; "
             "unvalidated tracks keep the model prediction (combined_source = model).",
         )
 
@@ -4610,7 +4610,7 @@ class ValidationPage(QWidget):
             return
         if self.session is not None:
             validated, total = self.session.progress()
-            logger.info("Validation session %s closed: %d/%d tracks validated", self.session.session_id,
+            logger.info("Validation session %s closed: %d/%d tracks validated", self.session.validation_session_id,
                         validated, total)
         close_session_log(self._session_log)
         self._session_log = None
@@ -4643,11 +4643,11 @@ class StatsDialog(QDialog):
                 other = ValidationSession.load(Path(info["csv_path"]))
             except (OSError, ValueError):
                 continue
-            others.append((other.validator, other.session_id, other.to_frame()))
+            others.append((other.validator, other.validation_session_id, other.to_frame()))
         self.session_comparison = compare_sessions(self.frame, session.validator, others, self.model_rank)
         sampling = session.meta["sampling"]
         self.prob_edges = list(sampling.get("prob_edges") or VALIDATION_PROB_BIN_EDGES_DEFAULT)
-        self.setWindowTitle(f"Validation statistics - {session.validator} ({session.session_id})")
+        self.setWindowTitle(f"Validation statistics - {session.validator} ({session.validation_session_id})")
         self.resize(1000, 700)
         self._create_ui()
         self._refresh()
@@ -5042,7 +5042,7 @@ class StatsDialog(QDialog):
         try:
             meta = self.session.meta
             info = {
-                **{key: meta[key] for key in ("validator", "session_id", "app_version", "blind", "run_name",
+                **{key: meta[key] for key in ("validator", "validation_session_id", "app_version", "blind", "run_name",
                                               "model_rank", "n_tracks_classified", "run_filters",
                                               "n_population_total")},
                 "selection": _fmt_selection(meta["sampling"], full=True),
@@ -5121,7 +5121,7 @@ class ValidationWindow(QMainWindow):
             return
         self.validation_page.load_session(run, session, taxonomy)
         self.stack.setCurrentWidget(self.validation_page)
-        self.setWindowTitle(f"Validation - {run.root.name} - {session.validator} ({session.session_id})")
+        self.setWindowTitle(f"Validation - {run.root.name} - {session.validator} ({session.validation_session_id})")
 
     @Slot()
     def _on_back_requested(self) -> None:
@@ -5270,8 +5270,8 @@ def _session_tooltip(info: dict[str, Any]) -> str:
     sampling = info["sampling"]
     return "\n".join([
         f"Validator: {info['validator']}" + ("   (blind determination)" if info["blind"] else ""),
-        f"Session: {info['session_id']}",
-        f"Started: {_fmt_time(info['created'])}   ·   last update: {_fmt_time(info['updated'])}",
+        f"Validation session ID: {info['validation_session_id']}",
+        f"Started: {_fmt_time(info['started'])}   ·   last update: {_fmt_time(info['updated'])}",
         f"Progress: {info['n_validated']} of {info['n_sampled']} sampled tracks validated",
         f"Selection: {_fmt_selection(sampling, full=True)}",
         f"Subsample: {_fmt_subsample(sampling, full=True)}",
