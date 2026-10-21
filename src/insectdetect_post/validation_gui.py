@@ -13,6 +13,7 @@ summarizes the session and exports the tables.
 Classes:
     RunLoadWorker: Loads a run (and optionally the taxonomy index) in a background thread.
     SetupPage: First page: pick the run and validator, select and subsample the tracks, start a session.
+    MultiExportDialog: Order of several sessions and conflict rule for their validated CSV.
     TrackInfoPanel: Header above the crops: the current track's metadata, prediction and candidate taxa.
     VerdictPanel: Form for the verdict on the current track: one-click actions, flags, taxon per rank, notes.
     ValidationPage: Second page, where tracks are validated: track list, crops, info and verdict panel.
@@ -82,6 +83,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListView,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QProgressBar,
@@ -155,6 +158,16 @@ from insectdetect_post.gui_utils import (
 )
 from insectdetect_post.styled_button import StyledButton
 from insectdetect_post.update_button import UpdateButton
+from insectdetect_post.validation_multi import (
+    CONFLICT_RULE_COMMON_ANCESTOR,
+    CONFLICT_RULE_PRIORITY,
+    DIFFERENT_DEPTH,
+    DIFFERENT_TAXA,
+    FALSE_POSITIVE_DISPUTED,
+    VALIDATION_CONFLICTS,
+    export_validated_sessions,
+    select_verdicts,
+)
 from insectdetect_post.validation_run import TrackKey, ValidationRun
 from insectdetect_post.validation_sampling import (
     NONE_LABEL,
@@ -271,6 +284,10 @@ _PREVIEW_DELAY_MS = 150
 
 # Setup page: start values of the duration filter for runs without their own (the processing defaults)
 _TRACK_FILTER_DEFAULTS = FilterTrackingConfig()
+
+# Setup page: how the verdicts of a track validated in several sessions differ (multi-session export)
+_CONFLICT_LABELS = {DIFFERENT_DEPTH: "different depth", DIFFERENT_TAXA: "different taxa",
+                    FALSE_POSITIVE_DISPUTED: "'not an arthropod' disputed"}
 
 # Verdict panel: gap between its three sections
 _SECTION_GAP = 12
@@ -721,7 +738,8 @@ class SetupPage(QWidget):
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.sessions_table.verticalHeader().setVisible(False)
         self.sessions_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.sessions_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        # Several sessions only for the validated CSV, the other buttons need exactly one
+        self.sessions_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.sessions_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.sessions_table.setMaximumHeight(140)
         self.sessions_table.itemDoubleClicked.connect(lambda _: self._resume_selected())
@@ -740,6 +758,14 @@ class SetupPage(QWidget):
                                    "(the validated export in the metadata directory is kept)")
         self.delete_btn.clicked.connect(self._delete_selected)
         sessions_buttons.addWidget(self.delete_btn)
+        self.export_sessions_btn = StyledButton("Export validated CSV", COLOR_BTN_RUN)
+        self.export_sessions_btn.setToolTip(
+            "Write the validated CSV of the selected session (as on the validation page), or one validated CSV of "
+            "several sessions (select them with Ctrl- or Shift-click): each track gets the verdict of one session, "
+            "which you choose by the order of the sessions")
+        self.export_sessions_btn.clicked.connect(self._export_sessions)
+        self.export_sessions_btn.setEnabled(False)
+        sessions_buttons.addWidget(self.export_sessions_btn)
         sessions_buttons.addStretch()
         self.sessions_hint = QLabel("No sessions yet for this run.")
         sessions_buttons.addWidget(self.sessions_hint)
@@ -1197,15 +1223,20 @@ class SetupPage(QWidget):
         self._update_session_buttons()
 
     def _update_session_buttons(self) -> None:
-        """Enable the session buttons while a session is selected."""
-        selected = bool(self.sessions_table.selectedItems())
+        """Enable the session buttons for one selected session, the validated CSV also for several."""
+        n_selected = len(self._selected_rows())
         for button in self.session_buttons:
-            button.setEnabled(selected)
+            button.setEnabled(n_selected == 1)
+        self.export_sessions_btn.setEnabled(n_selected >= 1)
+
+    def _selected_rows(self) -> list[int]:
+        """Return the selected rows of the sessions table, top first."""
+        return sorted({item.row() for item in self.sessions_table.selectedItems()})
 
     def _selected_session(self) -> dict[str, Any] | None:
-        """Return the listing entry of the selected row, or None."""
-        items = self.sessions_table.selectedItems()
-        return self._sessions.get(items[0].row()) if items else None
+        """Return the listing entry of the selected row, None unless exactly one row is selected."""
+        rows = self._selected_rows()
+        return self._sessions.get(rows[0]) if len(rows) == 1 else None
 
     def _use_settings(self) -> None:
         """Put the selection, subsample and blind mode of the selected session into the form."""
@@ -1313,6 +1344,63 @@ class SetupPage(QWidget):
         _settings().setValue(_SETTINGS_KEY_VALIDATOR, session.validator)
         self.validator_param.set_value(session.validator)
         self.session_ready.emit(session)
+
+    def _export_sessions(self) -> None:
+        """Write the validated CSV of the selected session, or of several in the order and rule of a dialog."""
+        infos = [self._sessions[row] for row in self._selected_rows() if row in self._sessions]
+        if self.run is None or not infos:
+            return
+        if len(infos) == 1:
+            self._export_session(infos[0])
+            return
+        dialog = MultiExportDialog(self.run, infos, self)
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        paths, rule = dialog.ordered_paths(), dialog.rule()
+        dialog.deleteLater()
+        if not accepted:
+            return
+        try:
+            result = export_validated_sessions(self.run, paths, self.taxonomy, rule)
+        except (OSError, ValueError) as e:
+            QMessageBox.critical(self, "Export failed", f"Could not write the validated CSV:\n\n{e}")
+            return
+        counts = result.counts
+        several = counts["n_validated_in_several_sessions"]
+        QMessageBox.information(
+            self, "Export written",
+            f"Validated CSV of {len(paths)} sessions written to:\n{result.csv_path}\n\n"
+            f"{counts['n_validated']} of {counts['n_tracks']} tracks are validated, "
+            f"{several} of them in several sessions{f' ({_fmt_conflict_counts(counts)})' if several else ''}. "
+            "Unvalidated tracks keep the model prediction (combined_source = model).\n\nThe folder also holds "
+            "verdict_conflicts.csv (every verdict of the tracks validated in several sessions), provenance.json "
+            "and copies of the session files.",
+        )
+        self.sessions_hint.setText(f"Validated CSV of {len(paths)} sessions written.")
+
+    def _export_session(self, info: dict[str, Any]) -> None:
+        """Write the validated export of one session, as on the validation page (asks first if the run changed)."""
+        assert self.run is not None
+        if source_csv_changed(info, self.run.final_provenance) and QMessageBox.warning(
+            self, "Run was processed again",
+            f"'{self.run.final_path.name}' has changed since this session was started "
+            f"({_fmt_time(info['started'])}).\n\n"
+            "The tracks of the session may no longer match the run's tracks. Export anyway?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No,
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            session = ValidationSession.load(Path(info["csv_path"]))
+            out_path = session.export_validated(self.run, self.taxonomy)
+        except (OSError, ValueError) as e:
+            QMessageBox.critical(self, "Export failed", f"Could not write the validated CSV:\n\n{e}")
+            return
+        validated, total = session.progress()
+        QMessageBox.information(
+            self, "Export written",
+            f"Validated CSV written to:\n{out_path}\n\n{validated} of {total} sampled tracks are validated; "
+            "unvalidated tracks keep the model prediction (combined_source = model).",
+        )
+        self.sessions_hint.setText("Validated CSV of the session written.")
 
     def _populate_sampling_options(self) -> None:
         """Fill the selection and subsample options for the loaded run."""
@@ -1667,6 +1755,148 @@ class SetupPage(QWidget):
         self._cleanup_thread()
         if self.update_btn is not None:
             self.update_btn.shutdown()
+
+
+class MultiExportDialog(QDialog):
+    """Dialog of the validated CSV of several sessions: their priority order, the conflict rule and the checks."""
+
+    def __init__(self, run: ValidationRun, infos: Sequence[dict[str, Any]], parent: QWidget | None = None) -> None:
+        """Initialize the dialog.
+
+        Args:
+            run: Opened run.
+            infos: list_sessions() entries of the selected sessions.
+            parent: Parent widget.
+        """
+        super().__init__(parent)
+        self.run = run
+        # Latest start first: a later session usually corrects an earlier one
+        self._infos = sorted(infos, key=lambda info: str(info["started"]), reverse=True)
+        self._sessions: dict[str, ValidationSession] = {}
+        self._load_errors: list[str] = []
+        for info in self._infos:
+            try:
+                self._sessions[str(info["csv_path"])] = ValidationSession.load(Path(info["csv_path"]))
+            except (OSError, ValueError) as e:
+                self._load_errors.append(f"{Path(info['csv_path']).name}: {e}")
+        self.setWindowTitle("Export validated CSV of several sessions")
+        self.resize(760, 460)
+        self._create_ui()
+        self._refresh()
+
+    def _create_ui(self) -> None:
+        """Build the session list, its order buttons, the rule, the checks and the buttons."""
+        layout = QVBoxLayout(self)
+        intro = QLabel("Sessions higher in this list take precedence for tracks validated in several of them. "
+                       "Move a session up to let its verdicts win.")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        row = QHBoxLayout()
+        self.session_list = QListWidget()
+        for info in self._infos:
+            item = QListWidgetItem(_fmt_session_line(info))
+            item.setData(Qt.ItemDataRole.UserRole, str(info["csv_path"]))
+            item.setToolTip(_session_tooltip(info))
+            self.session_list.addItem(item)
+        self.session_list.setCurrentRow(0)
+        self.session_list.currentRowChanged.connect(self._update_move_buttons)
+        row.addWidget(self.session_list, 1)
+        moves = QVBoxLayout()
+        self.up_btn = StyledButton("Move up", COLOR_BTN_RESET)
+        self.up_btn.clicked.connect(lambda: self._move(-1))
+        self.down_btn = StyledButton("Move down", COLOR_BTN_RESET)
+        self.down_btn.clicked.connect(lambda: self._move(1))
+        moves.addWidget(self.up_btn)
+        moves.addWidget(self.down_btn)
+        moves.addStretch()
+        row.addLayout(moves)
+        layout.addLayout(row, 1)
+
+        rule_row = QHBoxLayout()
+        rule_row.addWidget(QLabel("A track validated in several sessions gets:"))
+        self.rule_combo = QComboBox()
+        self.rule_combo.addItem("the verdict of the highest session (priority)", CONFLICT_RULE_PRIORITY)
+        self.rule_combo.addItem("the deepest taxon all its sessions agree on (lowest common ancestor)",
+                                CONFLICT_RULE_COMMON_ANCESTOR)
+        self.rule_combo.setToolTip(
+            "Priority: the verdict of the highest session in the list.\n"
+            "Lowest common ancestor: from class downwards, the ranks on which every session's verdict agrees; "
+            "the ranks below are indet.\nA track marked as not an arthropod in one session and determined in "
+            "another becomes not determinable (indet. at every rank).\nFlags, notes and links come from the "
+            "highest session either way.")
+        self.rule_combo.currentIndexChanged.connect(self._refresh)
+        rule_row.addWidget(self.rule_combo, 1)
+        layout.addLayout(rule_row)
+
+        self.checks_label = QLabel()
+        self.checks_label.setWordWrap(True)
+        self.checks_label.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(self.checks_label)
+        self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.export_btn = self.buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self.export_btn.setText("Export")
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        layout.addWidget(self.buttons)
+        self._update_move_buttons()
+
+    def ordered_paths(self) -> list[Path]:
+        """Return the session CSVs in the order of the list (highest priority first)."""
+        return [Path(self.session_list.item(i).data(Qt.ItemDataRole.UserRole))
+                for i in range(self.session_list.count())]
+
+    def rule(self) -> str:
+        """Return the chosen conflict rule."""
+        return str(self.rule_combo.currentData())
+
+    def _move(self, step: int) -> None:
+        """Move the current session up (-1) or down (+1)."""
+        row = self.session_list.currentRow()
+        target = row + step
+        if row < 0 or not 0 <= target < self.session_list.count():
+            return
+        item = self.session_list.takeItem(row)
+        self.session_list.insertItem(target, item)
+        self.session_list.setCurrentRow(target)
+        self._refresh()
+
+    def _update_move_buttons(self) -> None:
+        """Enable the move buttons where the current session can move."""
+        row = self.session_list.currentRow()
+        self.up_btn.setEnabled(row > 0)
+        self.down_btn.setEnabled(0 <= row < self.session_list.count() - 1)
+
+    def _refresh(self) -> None:
+        """Check the sessions and preview the tracks validated in several of them."""
+        errors = list(self._load_errors)
+        infos = {str(info["csv_path"]): info for info in self._infos}
+        stale = [f"{info['validator']} ({_fmt_time(info['started'])})" for info in infos.values()
+                 if source_csv_changed(info, self.run.final_provenance)]
+        if stale:
+            errors.append(f"'{self.run.final_path.name}' has changed since these sessions were started, so their "
+                          f"tracks may no longer match: {', '.join(stale)}. Leave them out of the selection.")
+        lines = [f"<span style='color:{_error_color()}'>{html.escape(e)}</span>" for e in errors]
+        sessions = [self._sessions[str(p)] for p in self.ordered_paths() if str(p) in self._sessions]
+        if not errors and sessions:
+            if len({(s.meta["taxonomy"] or {}).get("sha256") for s in sessions}) > 1:
+                lines.append("The sessions were started with different versions of the taxonomy list: a species "
+                             "may appear under two names.")
+            selection = select_verdicts(sessions, self.rule())
+            several = [sel for sel in selection.verdicts.values() if len(sel.candidates) > 1]
+            counts = {conflict: sum(1 for sel in several if sel.conflict == conflict)
+                      for conflict in VALIDATION_CONFLICTS}
+            if several:
+                n = len(several)
+                lines.append(f"{n} {'track is' if n == 1 else 'tracks are'} validated in several sessions "
+                             f"({_fmt_conflict_counts(counts, n)}); verdict_conflicts.csv lists all their verdicts.")
+            else:
+                lines.append("No track is validated in more than one of these sessions.")
+            if selection.n_links_dropped:
+                lines.append("Same-individual links to a track whose verdict is 'not an arthropod' are left out: "
+                             f"{selection.n_links_dropped} (listed in provenance.json).")
+        self.checks_label.setText("<br>".join(lines))
+        self.export_btn.setEnabled(not errors and bool(sessions))
+        self._update_move_buttons()
 
 
 class TrackInfoPanel(QWidget):
@@ -4643,7 +4873,7 @@ class StatsDialog(QDialog):
                 other = ValidationSession.load(Path(info["csv_path"]))
             except (OSError, ValueError):
                 continue
-            others.append((other.validator, other.validation_session_id, other.to_frame()))
+            others.append((other.validator, other.stem, other.to_frame()))
         self.session_comparison = compare_sessions(self.frame, session.validator, others, self.model_rank)
         sampling = session.meta["sampling"]
         self.prob_edges = list(sampling.get("prob_edges") or VALIDATION_PROB_BIN_EDGES_DEFAULT)
@@ -5265,6 +5495,13 @@ def _fmt_subsample(sampling: dict[str, Any], full: bool = False) -> str:
     return "; ".join(parts)
 
 
+def _fmt_session_line(info: dict[str, Any]) -> str:
+    """Return a session as one line: validator, start, progress and selection."""
+    blind = "  (blind)" if info["blind"] else ""
+    return (f"{info['validator']}{blind}  ·  started {_fmt_time(info['started'])}  ·  "
+            f"{info['n_validated']} / {info['n_sampled']} validated  ·  {_fmt_selection(info['sampling'])}")
+
+
 def _session_tooltip(info: dict[str, Any]) -> str:
     """Return the tooltip of a sessions table row."""
     sampling = info["sampling"]
@@ -5277,6 +5514,15 @@ def _session_tooltip(info: dict[str, Any]) -> str:
         f"Subsample: {_fmt_subsample(sampling, full=True)}",
         f"File: {Path(info['csv_path']).name}",
     ])
+
+
+def _fmt_conflict_counts(counts: dict[str, int], n_several: int | None = None) -> str:
+    """Return how the verdicts of tracks validated in several sessions differ, e.g. 'agree: 9, different depth: 2'."""
+    total = counts.get("n_validated_in_several_sessions", 0) if n_several is None else n_several
+    agree = total - sum(counts.get(c, 0) for c in VALIDATION_CONFLICTS)
+    parts = [f"agree: {agree}"] if agree else []
+    parts.extend(f"{_CONFLICT_LABELS[c]}: {counts.get(c, 0)}" for c in VALIDATION_CONFLICTS if counts.get(c))
+    return ", ".join(parts)
 
 
 def _parse_grid_zoom(text: str) -> GridZoom:

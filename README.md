@@ -481,6 +481,48 @@ Every session is identified by its validator and its start time (`<started>` = `
 └── stats_<validator>_<started>/            # exported statistics tables and summary.json
 ```
 
+### Several sessions per run
+
+Each session keeps its own track selection and subsample, so a run can be split between validators
+(e.g. one expert for Syrphidae, another for bees) or validated in parts (e.g. one month per session).
+Validate the same tracks in two sessions only on purpose: `Statistics` compares them as a re-check of
+the same validator or as agreement between validators.
+
+- **Splitting one design** - create one session as a template, then start each part with
+  `Use these settings` and add only a taxa filter, at the rank of the strata. With the same strata and
+  seed, every part samples exactly the tracks the whole design would have sampled for its taxa.
+- **One validated CSV** - select the sessions with Ctrl- or Shift-click and press `Export validated CSV`.
+  The dialog lists them by start time, latest first: a track validated in several sessions gets the
+  verdict of the highest one (*priority*, move a session up to let it win, e.g. an expert's session
+  over an overview session), or the deepest taxon all its sessions agree on (*lowest common ancestor*,
+  a track marked *not an arthropod* in one session and determined in another becomes not determinable).
+  Flags, notes and links always come from the highest session. Sessions of a run processed again are refused.
+  With one session selected, the button writes the same file as on the validation page.
+
+``` text
+<run>/metadata/..._classified_final_validated_multi_<time>/
+├── ..._classified_final_validated_multi_<time>.csv   # every track of the run, as the session export
+├── verdict_conflicts.csv                             # every verdict of the tracks validated in several sessions
+├── provenance.json                                   # rule, session order, checksums, counts, removed links
+└── validation_sessions/                              # copies of the session files the CSV is made from
+```
+
+The CSV adds `validation_session` (the session(s) of the verdict), `validation_n_sessions` (how many
+sessions validated the track) and `validation_conflict` (how their verdicts differ: `different_depth`,
+`different_taxa` or `false_positive_disputed`). Before analyzing it:
+
+- Report the statistics of each session, they are not pooled. `stratum_id` and `stratum_n_population`
+  belong to the session in `validation_session`.
+- A session that selects tracks by predicted taxon removes wrong identifications of that taxon, but
+  misses its tracks the model predicted as something else: counts of the validated taxa are corrected
+  downwards, not upwards.
+- The parts can differ in sampling and depth: `combined_source`, `val_lowest_rank` and
+  `validation_session` tell them apart.
+- The CSV is a snapshot of the sessions at the moment of the export: verdicts added or changed later
+  are only included after exporting again.
+- Use the same validator name in every session of one person: the `validator` column and
+  `provenance.json` name each person by it, so two spellings look like two validators.
+
 ---
 
 ## AI use

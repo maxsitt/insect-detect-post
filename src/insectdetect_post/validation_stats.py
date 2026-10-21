@@ -611,7 +611,7 @@ def compare_sessions(
     Args:
         frame: Session table.
         validator: Validator of the session.
-        others: '(validator, validation_session_id, session table)' of the other sessions.
+        others: '(validator, file stem, session table)' of the other sessions (see ValidationSession.stem).
         model_rank: Deepest rank of the run.
 
     Returns:
@@ -622,11 +622,11 @@ def compare_sessions(
                "kappa_ci_low", "kappa_ci_high"]
     rows = [
         inter_validator_agreement(frame, other_frame, model_rank).with_columns(
-            pl.lit(f"{other_validator}_{validation_session_id}").alias("other_session"),
+            pl.lit(other_stem).alias("other_session"),
             pl.lit("same validator (test-retest)" if other_validator == validator else "other validator")
             .alias("comparison"),
         ).select(columns)
-        for other_validator, validation_session_id, other_frame in others
+        for other_validator, other_stem, other_frame in others
     ]
     if not rows:
         return pl.DataFrame(schema={"other_session": pl.String, "comparison": pl.String, "level": pl.String,

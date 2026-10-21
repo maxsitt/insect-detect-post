@@ -26,6 +26,8 @@ Functions:
     parse_links(), join_links(), with_link(): Read and edit 'same_individual_as' values.
     has_qualifier(), with_qualifier(), allowed_qualifier(), qualifier_mark(): Identification qualifiers.
     derive_verdict(): Verdict type, agreement rank and lowest determined rank.
+    verdict_columns(), verdict_frame(): Verdict columns of the session CSV.
+    validated_frame(): Final CSV joined with the verdicts of a session table.
     session_files(): Files and directories of a session.
     delete_session(): Remove a session with all its files.
     source_csv_changed(): Whether the run's final CSV changed after a session started.
@@ -33,6 +35,7 @@ Functions:
     sort_tracks_chronologically(): Tracks in time order (start time, then track ID).
     anchor_of(): Track ID naming an individual.
     individual_groups(): Individuals from 'same_individual_as' links.
+    now_iso(), app_version(): Time and package version recorded in the session files.
 """
 
 from __future__ import annotations
@@ -84,10 +87,10 @@ _SESSION_CSV_SUFFIX = "_validation.csv"
 _SESSION_JSON_SUFFIX = "_validation.json"
 _SESSION_LOG_SUFFIX = "_validation.log"
 _HISTORY_SUFFIX = "_history.jsonl"
-_EXPORT_SUFFIX = "_validated"
+EXPORT_SUFFIX = "_validated"  # validated export: '<final_stem>_validated_<stem>.csv'
 
-# Validation session ID: the start time (a counter is appended within the same second)
-_SESSION_ID_FORMAT = "%Y-%m-%d_%H-%M-%S"
+# Validation session ID and export time: the start time (a counter is appended within the same second)
+STAMP_FORMAT = "%Y-%m-%d_%H-%M-%S"
 
 # IDs issued in this process (a session reaches the disk only on its first save)
 _ISSUED_SESSION_IDS: set[tuple[str, str]] = set()
@@ -168,7 +171,7 @@ def new_validation_session_id(run_root: Path, validator: str, now: datetime | No
     Returns:
         Validation session ID, e.g. '2026-09-16_14-33-05'.
     """
-    stamp = (now or datetime.now()).strftime(_SESSION_ID_FORMAT)  # noqa: DTZ005
+    stamp = (now or datetime.now()).strftime(STAMP_FORMAT)  # noqa: DTZ005
     directory = OutputLayout(Path(run_root)).validation_dir
     name = safe_validator_name(validator)
     validation_session_id, n = stamp, 1
@@ -542,9 +545,9 @@ class ValidationSession:
             # Session
             "validator": validator,
             "validation_session_id": new_validation_session_id(run.root, validator),
-            "started": _now_iso(),
-            "updated": _now_iso(),
-            "app_version": _app_version(),
+            "started": now_iso(),
+            "updated": now_iso(),
+            "app_version": app_version(),
             "blind": bool(blind),
             # Source: the run, its final CSV at session start (see source_csv_changed()) and the taxonomy list
             "run_name": run.root.name,
@@ -746,7 +749,7 @@ class ValidationSession:
         """Store a verdict and mark the track validated. 'seconds' is kept by the session."""
         previous = self.verdicts.get(key)
         verdict.validated = True
-        verdict.validated_at = verdict.validated_at or _now_iso()
+        verdict.validated_at = verdict.validated_at or now_iso()
         verdict.seconds = (previous.seconds if previous else 0.0) + self._pending_seconds.pop(key, 0.0)
         self._store(key, verdict)
         self._log("verdict", key, verdict)
@@ -829,52 +832,27 @@ class ValidationSession:
             self.meta["custom_taxa"].append(entry)
             self.unsaved = True
 
+    def seconds_spent(self, key: TrackKey) -> float | None:
+        """Return the validation effort of a track (also without a verdict), None if none was recorded."""
+        entry = self.verdicts.get(key)
+        if entry is not None:
+            return round(entry.seconds + self._pending_seconds.get(key, 0.0), 1)
+        return round(self._pending_seconds[key], 1) if key in self._pending_seconds else None
+
     def to_frame(self) -> pl.DataFrame:
         """Return the full session table (base columns + verdict columns) in queue order."""
-        rows = []
-        for key in self._keys:
-            entry = self.verdicts.get(key)
-            verdict = entry if entry is not None and entry.validated else None
-            verdict_type, agree_rank, lowest = self.derived(key)
-            row: dict[str, Any] = {
-                "validated": verdict is not None,
-                "validated_at": verdict.validated_at if verdict else None,
-                "validator": self.validator if entry else None,
-                "verdict": verdict_type,
-                # Flags are kept for pending entries as well
-                "image_quality": entry.image_quality if entry else None,
-                "image_quality_reason": (
-                    entry.image_quality_reason if entry and entry.image_quality == "low" else None
-                ),
-                "multiple_individuals": (
-                    entry.multiple_individuals if entry and not (verdict and verdict.false_positive) else None
-                ),
-                "same_individual_as": (
-                    entry.same_individual_as if entry and not (verdict and verdict.false_positive) else None
-                ),
-                "val_lowest_rank": lowest,
-                # Kept for pending entries, the rank rule needs a determination
-                "val_qualifier": (allowed_qualifier(entry.qualifier, lowest) if verdict else entry.qualifier)
-                if entry else None,
-                "val_sex": entry.sex if entry and not (verdict and verdict.false_positive) else None,
-                "val_source": verdict.val_source if verdict and not verdict.false_positive else None,
-                "agree_rank": agree_rank,
-                "notes": (entry.notes or None) if entry else None,
-                "seconds_spent": round(entry.seconds + self._pending_seconds.get(key, 0.0), 1) if entry
-                else (round(self._pending_seconds[key], 1) if key in self._pending_seconds else None),
-            }
-            for rank in VALIDATION_RANKS:
-                row[f"val_{rank}"] = (verdict.val.get(rank) or None) if verdict and not verdict.false_positive else None
-            rows.append(row)
-        schema = dict.fromkeys(_VERDICT_COLUMNS, pl.String) | {"validated": pl.Boolean, "seconds_spent": pl.Float64}
-        verdict_df = pl.DataFrame(rows, schema=schema).select(_VERDICT_COLUMNS)
-        return self.base.hstack(verdict_df)
+        rows = [
+            verdict_columns(entry := self.verdicts.get(key), self.derived(key),
+                            self.validator if entry else None, self.seconds_spent(key))
+            for key in self._keys
+        ]
+        return self.base.hstack(verdict_frame(rows))
 
     def save(self) -> None:
         """Write CSV + JSON atomically (temp file, then replace)."""
         self.session_dir(self.run_root).mkdir(parents=True, exist_ok=True)
         frame = self.to_frame()
-        self.meta["updated"] = _now_iso()
+        self.meta["updated"] = now_iso()
         self.meta["n_sampled"] = frame.height
         self.meta["n_validated"] = self.progress()[0]
         self.meta["validator"] = self.validator
@@ -895,56 +873,13 @@ class ValidationSession:
     def export_validated(self, run: ValidationRun, taxonomy: TaxonomyIndex | None = None) -> Path:
         """Write the final CSV joined with the verdicts ('<final_stem>_validated_<stem>.csv').
 
-        Adds 'combined_<rank>' (validator's names for validated tracks, indet. empty and an aggregate
-        species with ' agg.', else the model's, its species as GBIF canonical name like the comparison),
-        'combined_source' and 'individual_id' / 'individual_n_tracks'. The final CSV's 'gbif_species'
-        and 'gbif_species_key' come along; a validator's species gets its key by joining
-        'combined_species' with 'gbif_species' of the species mapping.
+        See validated_frame() for the added columns.
 
         Returns:
             Path of the written CSV.
         """
-        frame = self.to_frame()
-        join_cols = [*TRACK_KEY_COLUMNS, "stratum_id", "stratum_n_population", *_VERDICT_COLUMNS]
-        # Rows in the order of the final CSV
-        exported = run.tracks.join(frame.select(join_cols), on=TRACK_KEY_COLUMNS, how="left", maintain_order="left")
-        exported = exported.with_columns(pl.col("validated").fill_null(False))
-
-        # The model's species in the form the validation compares on
-        model_species = (taxonomy or TaxonomyIndex()).canonical_species_expr(exported.columns)
-        validated = pl.col("validated")
-        false_positive = pl.col("verdict") == "false_positive"
-        combined_cols = []
-        for rank in _RANKS_CSV:
-            model_col = f"bioclip_{rank}"
-            if model_col not in exported.columns:
-                model_expr = pl.lit(None, dtype=pl.String)
-            elif rank == "species":
-                model_expr = model_species
-            else:
-                model_expr = pl.col(model_col)
-            val_col = pl.col(f"val_{rank}")
-            human = pl.when(val_col != INDET_LABEL).then(val_col)
-            if rank == "species":
-                # An aggregate is a group of species, not the species it is named after
-                aggregate = pl.col("val_qualifier").fill_null("").str.split(" ").list.contains(ID_QUALIFIER_AGG)
-                human = (pl.when(aggregate & (val_col != INDET_LABEL)).then(val_col + f" {ID_QUALIFIER_AGG}")
-                         .otherwise(human))
-            # One source per track: an indet. rank stays empty, not the model's name
-            combined_cols.append(
-                pl.when(false_positive).then(pl.lit(None, dtype=pl.String))
-                .when(validated).then(human)
-                .otherwise(model_expr)
-                .alias(f"combined_{rank}")
-            )
-        exported = exported.with_columns(combined_cols).with_columns(
-            pl.when(false_positive).then(pl.lit("false_positive"))
-            .when(validated).then(pl.lit("human"))
-            .otherwise(pl.lit("model"))
-            .alias("combined_source")
-        )
-        exported = exported.join(individual_groups(exported), on=TRACK_KEY_COLUMNS, how="left", maintain_order="left")
-        out_path = run.final_path.with_name(f"{run.final_path.stem}{_EXPORT_SUFFIX}_{self.stem}.csv")
+        exported = validated_frame(run, self.to_frame(), taxonomy)
+        out_path = run.final_path.with_name(f"{run.final_path.stem}{EXPORT_SUFFIX}_{self.stem}.csv")
         exported.write_csv(out_path)
         logger.info("Validated export written: %s", out_path)
         return out_path
@@ -978,7 +913,7 @@ class ValidationSession:
 
     def _log(self, action: str, key: TrackKey, verdict: Verdict | None) -> None:
         """Queue a history event (written to the history file on the next save)."""
-        event: dict[str, Any] = {"time": _now_iso(), "validator": self.validator, "action": action,
+        event: dict[str, Any] = {"time": now_iso(), "validator": self.validator, "action": action,
                                  "device_id": key[0], "session_id": key[1], "track_id": key[2]}
         if verdict is not None:
             verdict_type, agree_rank, lowest = derive_verdict(self.model_lineage(key), verdict, self.model_rank)
@@ -992,6 +927,124 @@ class ValidationSession:
                 "notes": verdict.notes or None,
             })
         self._history.append(event)
+
+
+def verdict_columns(
+    entry: Verdict | None,
+    derived: tuple[str | None, str | None, str | None],
+    validator: str | None,
+    seconds: float | None,
+) -> dict[str, Any]:
+    """Return the verdict columns of one track, as written to the session CSV.
+
+    Args:
+        entry: Stored verdict (also a pending one), or None.
+        derived: '(verdict_type, agree_rank, val_lowest_rank)' of the verdict (see derive_verdict()).
+        validator: Validator named in the row (None without an entry).
+        seconds: Validation effort of the track, or None.
+
+    Returns:
+        One value per verdict column.
+    """
+    verdict = entry if entry is not None and entry.validated else None
+    verdict_type, agree_rank, lowest = derived
+    row: dict[str, Any] = {
+        "validated": verdict is not None,
+        "validated_at": verdict.validated_at if verdict else None,
+        "validator": validator,
+        "verdict": verdict_type,
+        # Flags are kept for pending entries as well
+        "image_quality": entry.image_quality if entry else None,
+        "image_quality_reason": entry.image_quality_reason if entry and entry.image_quality == "low" else None,
+        "multiple_individuals": (
+            entry.multiple_individuals if entry and not (verdict and verdict.false_positive) else None
+        ),
+        "same_individual_as": entry.same_individual_as if entry and not (verdict and verdict.false_positive) else None,
+        "val_lowest_rank": lowest,
+        # Kept for pending entries, the rank rule needs a determination
+        "val_qualifier": (
+            (allowed_qualifier(entry.qualifier, lowest) if verdict else entry.qualifier) if entry else None
+        ),
+        "val_sex": entry.sex if entry and not (verdict and verdict.false_positive) else None,
+        "val_source": verdict.val_source if verdict and not verdict.false_positive else None,
+        "agree_rank": agree_rank,
+        "notes": (entry.notes or None) if entry else None,
+        "seconds_spent": seconds,
+    }
+    for rank in VALIDATION_RANKS:
+        row[f"val_{rank}"] = (verdict.val.get(rank) or None) if verdict and not verdict.false_positive else None
+    return row
+
+
+def verdict_frame(rows: Sequence[Mapping[str, Any]]) -> pl.DataFrame:
+    """Return verdict_columns() rows as a dataframe with the session CSV's verdict columns and types."""
+    schema = dict.fromkeys(_VERDICT_COLUMNS, pl.String) | {"validated": pl.Boolean, "seconds_spent": pl.Float64}
+    return pl.DataFrame(rows, schema=schema).select(_VERDICT_COLUMNS)
+
+
+def validated_frame(
+    run: ValidationRun,
+    frame: pl.DataFrame,
+    taxonomy: TaxonomyIndex | None = None,
+    extra_columns: Sequence[str] = (),
+) -> pl.DataFrame:
+    """Return every track of the run's final CSV joined with the verdicts of a session table.
+
+    Adds 'combined_<rank>' (validator's names for validated tracks, indet. empty and an aggregate
+    species with ' agg.', else the model's, its species as GBIF canonical name like the comparison),
+    'combined_source' and 'individual_id' / 'individual_n_tracks'. The final CSV's 'gbif_species'
+    and 'gbif_species_key' come along; a validator's species gets its key by joining
+    'combined_species' with 'gbif_species' of the species mapping.
+
+    Args:
+        run: Opened run.
+        frame: Rows with the track key, 'stratum_id', 'stratum_n_population' and the verdict columns.
+        taxonomy: Maps model species to canonical names.
+        extra_columns: Further columns of 'frame' to append, in this order.
+
+    Returns:
+        One row per track, in the order of the final CSV.
+    """
+    join_cols = [*TRACK_KEY_COLUMNS, "stratum_id", "stratum_n_population", *_VERDICT_COLUMNS, *extra_columns]
+    exported = run.tracks.join(frame.select(join_cols), on=TRACK_KEY_COLUMNS, how="left", maintain_order="left")
+    exported = exported.with_columns(pl.col("validated").fill_null(False))
+
+    # The model's species in the form the validation compares on
+    model_species = (taxonomy or TaxonomyIndex()).canonical_species_expr(exported.columns)
+    validated = pl.col("validated")
+    false_positive = pl.col("verdict") == "false_positive"
+    combined_cols = []
+    for rank in _RANKS_CSV:
+        model_col = f"bioclip_{rank}"
+        if model_col not in exported.columns:
+            model_expr = pl.lit(None, dtype=pl.String)
+        elif rank == "species":
+            model_expr = model_species
+        else:
+            model_expr = pl.col(model_col)
+        val_col = pl.col(f"val_{rank}")
+        human = pl.when(val_col != INDET_LABEL).then(val_col)
+        if rank == "species":
+            # An aggregate is a group of species, not the species it is named after
+            aggregate = pl.col("val_qualifier").fill_null("").str.split(" ").list.contains(ID_QUALIFIER_AGG)
+            human = (pl.when(aggregate & (val_col != INDET_LABEL)).then(val_col + f" {ID_QUALIFIER_AGG}")
+                     .otherwise(human))
+        # One source per track: an indet. rank stays empty, not the model's name
+        combined_cols.append(
+            pl.when(false_positive).then(pl.lit(None, dtype=pl.String))
+            .when(validated).then(human)
+            .otherwise(model_expr)
+            .alias(f"combined_{rank}")
+        )
+    exported = exported.with_columns(combined_cols).with_columns(
+        pl.when(false_positive).then(pl.lit("false_positive"))
+        .when(validated).then(pl.lit("human"))
+        .otherwise(pl.lit("model"))
+        .alias("combined_source")
+    )
+    exported = exported.join(individual_groups(exported), on=TRACK_KEY_COLUMNS, how="left", maintain_order="left")
+    # The extra columns describe the verdict: they stay at the end, after the individual
+    return exported.select([*(c for c in exported.columns if c not in extra_columns), *extra_columns])
 
 
 def session_files(csv_path: Path) -> list[Path]:
@@ -1154,6 +1207,19 @@ def individual_groups(frame: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def now_iso() -> str:
+    """Return the current local time as an ISO string (seconds)."""
+    return datetime.now().isoformat(timespec="seconds")  # noqa: DTZ005
+
+
+def app_version() -> str:
+    """Return the installed package version, 'unknown' if not installed."""
+    try:
+        return version("insect-detect-post")
+    except PackageNotFoundError:
+        return "unknown"
+
+
 def _read_meta(json_path: Path) -> dict[str, Any]:
     """Read a validation session JSON.
 
@@ -1184,16 +1250,3 @@ def _newer_version_message(file_name: str, kind: str, unknown: list[str], meta: 
     """Return the error message for a session file with fields of a newer version."""
     return (f"Session file '{file_name}' has {kind} unknown to this version ({', '.join(unknown)}): it was "
             f"probably saved by a newer version (created with {meta.get('app_version', 'unknown')}).")
-
-
-def _now_iso() -> str:
-    """Return the current local time as an ISO string (seconds)."""
-    return datetime.now().isoformat(timespec="seconds")  # noqa: DTZ005
-
-
-def _app_version() -> str:
-    """Return the installed package version, 'unknown' if not installed."""
-    try:
-        return version("insect-detect-post")
-    except PackageNotFoundError:
-        return "unknown"
