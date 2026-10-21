@@ -98,27 +98,28 @@ class BioclipFilterArthropodsConfig(BaseModel):
 
     'taxa': One or more arthropod groups to restrict predictions to.
             'all' covers the whole phylum Arthropoda and supersedes any other selection.
-    'countries': One or more country codes recognized by the GBIF API. A species is kept if it
-                 occurs in any of them; 'all' means no restriction by country.
-    'continents': One or more GBIF continents. A species is kept if it occurs in any of them;
-                  'all' means no restriction by continent. Only one of 'countries' and
-                  'continents' can restrict the region.
+    'countries': Country codes recognized by the GBIF API. A species is kept if it has at least
+                 MIN_OCCURRENCE_COUNT GBIF occurrence records in one of them; an empty list
+                 means no restriction by country.
+    'continents': GBIF continents. A species is kept if it has at least MIN_OCCURRENCE_COUNT
+                  GBIF occurrence records in one of them; an empty list means no restriction
+                  by continent. Only one of 'countries' and 'continents' can restrict the region.
     """
     enabled: bool = True
     taxa: list[Literal["all", "Insecta", "Arachnida", "Diplopoda", "Chilopoda", "Isopoda"]] = (
         Field(default=["Insecta", "Arachnida"], min_length=1)
     )
     countries: list[Literal[get_bioclip_country_options()]] = (  # pyright: ignore[reportInvalidTypeForm]
-        Field(default=["all"], min_length=1)
+        Field(default_factory=list)
     )
     continents: list[Literal[BIOCLIP_CONTINENT_OPTIONS]] = (  # pyright: ignore[reportInvalidTypeForm]
-        Field(default=["all"], min_length=1)
+        Field(default_factory=list)
     )
 
     @field_validator("taxa", "countries", "continents")
     @classmethod
     def _normalize_selection(cls, values: list[str], info: ValidationInfo) -> list[str]:
-        """Collapse to 'all' if selected, otherwise drop duplicates and sort into option order.
+        """Collapse taxa to 'all' if selected, otherwise drop duplicates and sort into option order.
 
         The option order is the order the GUI returns, so a loaded config does not read as edited.
         """
@@ -130,9 +131,9 @@ class BioclipFilterArthropodsConfig(BaseModel):
     @model_validator(mode="after")
     def _single_region_type(self) -> BioclipFilterArthropodsConfig:
         """Reject a region restricted by both countries and continents."""
-        if self.countries != ["all"] and self.continents != ["all"]:
+        if self.countries and self.continents:
             raise ValueError(
-                "'countries' and 'continents' cannot both restrict the region -- set one of them to 'all'."
+                "'countries' and 'continents' cannot both restrict the region -- leave one of them empty."
             )
         return self
 
@@ -447,6 +448,7 @@ def _migrate_raw(raw: dict[str, object]) -> list[str]:
     'metadata.filter_predictions' was merged into 'metadata.filter_tracks' (one switch for all
     track filters), 'min_det_conf' became 'min_det_conf_mean' and 'min_prob_weighted' became
     'min_pred_prob_weighted'. The filters that were on stay on and the ones that were off stay off.
+    'all' in the BioCLIP 'countries' and 'continents' became an empty list (no restriction).
 
     Args:
         raw: Raw dict loaded from YAML, modified in-place.
@@ -454,17 +456,29 @@ def _migrate_raw(raw: dict[str, object]) -> list[str]:
     Returns:
         List of human-readable messages of the moved settings.
     """
+    messages: list[str] = []
+
+    classification = raw.get("classification")
+    bioclip = classification.get("bioclip") if isinstance(classification, dict) else None
+    region = bioclip.get("filter_arthropods") if isinstance(bioclip, dict) else None
+    if isinstance(region, dict):
+        for key in ("countries", "continents"):
+            values = region.get(key)
+            if isinstance(values, list) and "all" in values:
+                region[key] = []
+                messages.append(f"  classification.bioclip.filter_arthropods.{key}: [all] -> []")
+
     meta = raw.get("metadata")
     if not isinstance(meta, dict):
-        return []
+        return messages
     tracks = meta.get("filter_tracks")
     tracks = cast(dict[str, object], tracks) if isinstance(tracks, dict) else {}
-    messages: list[str] = []
+    track_messages: list[str] = []
 
     if "min_det_conf" in tracks:
         value = tracks.pop("min_det_conf")
         tracks.setdefault("min_det_conf_mean", value)
-        messages.append("  metadata.filter_tracks.min_det_conf -> metadata.filter_tracks.min_det_conf_mean")
+        track_messages.append("  metadata.filter_tracks.min_det_conf -> metadata.filter_tracks.min_det_conf_mean")
 
     predictions = meta.pop("filter_predictions", None)
     if isinstance(predictions, dict):
@@ -477,12 +491,12 @@ def _migrate_raw(raw: dict[str, object]) -> list[str]:
             tracks.update(enabled=True, min_dur_s=0,
                           max_dur_s=get_field_constraints(FilterTrackingConfig, "max_dur_s")["max"],
                           min_det_conf_mean=0.0)
-        messages.append("  metadata.filter_predictions.min_prob_weighted -> "
-                        "metadata.filter_tracks.min_pred_prob_weighted")
+        track_messages.append("  metadata.filter_predictions.min_prob_weighted -> "
+                              "metadata.filter_tracks.min_pred_prob_weighted")
 
-    if messages:
+    if track_messages:
         meta["filter_tracks"] = tracks
-    return messages
+    return messages + track_messages
 
 
 def _deep_update(base: dict[str, object], updates: dict[str, object]) -> None:

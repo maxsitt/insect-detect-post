@@ -80,8 +80,8 @@ def classify_imgs_bioclip(
     rank: str = "species",
     filter_arthropods_enabled: bool = False,
     filter_taxa: Sequence[str] = ("all",),
-    filter_countries: Sequence[str] = ("all",),
-    filter_continents: Sequence[str] = ("all",),
+    filter_countries: Sequence[str] = (),
+    filter_continents: Sequence[str] = (),
     device: str = "cpu",
     progress_callback: Callable[[int, int, str], None] | None = None
 ) -> Path:
@@ -101,9 +101,9 @@ def classify_imgs_bioclip(
         filter_taxa: Taxa to restrict predictions to, as keys of _TAXA_RANKS. A species is kept
             if it matches any of them; 'all' covers the whole phylum Arthropoda.
         filter_countries: ISO 3166-1 alpha-2 country codes. A species is kept if it occurs in
-            any of them; 'all' means no restriction by country.
+            any of them; empty means no restriction by country.
         filter_continents: GBIF continents. A species is kept if it occurs in any of them;
-            'all' means no restriction by continent. Only one of filter_countries and
+            empty means no restriction by continent. Only one of filter_countries and
             filter_continents can restrict the region.
         device: Device to run model on ("cpu" or "cuda").
         progress_callback: Optional progress callback.
@@ -116,11 +116,11 @@ def classify_imgs_bioclip(
 
     # Region type and codes to restrict predictions to, if any, plus a label for messages
     region: tuple[RegionType, Sequence[str]] | None = None
-    region_label = "region='all'"
-    if "all" not in filter_countries:
+    region_label = "no region"
+    if filter_countries:
         region = ("country", filter_countries)
         region_label = f"countries='{', '.join(filter_countries)}'"
-    if "all" not in filter_continents:
+    if filter_continents:
         if region is not None:
             raise ValueError("Countries and continents cannot both restrict the region filter")
         region = ("continent", filter_continents)

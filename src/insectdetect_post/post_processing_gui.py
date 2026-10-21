@@ -74,6 +74,7 @@ from insectdetect_post.constants import (
     COLOR_GROUP_PROCESSING,
     CONFIG_SELECTOR_PATH,
     CONFIGS_PATH,
+    MIN_OCCURRENCE_COUNT,
     MODELS_JSON,
     MODELS_PATH,
     PROG_BAR_STYLESHEET,
@@ -126,7 +127,7 @@ BIOCLIP_RANK_OPTIONS = get_field_literals(AppConfig, "classification", "bioclip"
 
 
 def _filter_options(field: str) -> tuple[str, ...]:
-    """Return the selectable values of a BioCLIP filter field, without its exclusive 'all'."""
+    """Return the selectable values of a BioCLIP filter field, without the exclusive 'all' of taxa."""
     literals = get_field_literals(AppConfig, "classification", "bioclip", "filter_arthropods", field)
     return tuple(value for value in literals if value != "all")
 
@@ -420,50 +421,42 @@ class ConfigWidget(QWidget):
             tooltip="Restrict predictions to the selected arthropod groups (and optionally a region)"
         )
         taxa_select = MultiComboParameter[str]("taxa")
-        taxa_select.set_label("Taxa")
+        taxa_select.set_label("Arthropod taxa")
         taxa_select.set_items(FILTER_TAXA_OPTIONS)
         taxa_select.set_exclusive_items(("all",))
         taxa_select.set_minimum_selection(1)  # an empty selection is rejected by the config schema
         taxa_select.combo.set_maximum_display_items(0)  # show every selected entry
         taxa_select.set_default(tuple(_DEFAULTS.classification.bioclip.filter_arthropods.taxa))
-        taxa_select.setToolTip("Force BioCLIP to only predict species within the selected taxa")
+        taxa_select.setToolTip("Force BioCLIP to only predict species within the selected arthropod taxa")
         filter_arthropods_form.add_parameter(taxa_select)
 
         countries_select = MultiComboParameter[str]("countries")
         countries_select.set_label("Countries")
         countries_select.set_items(FILTER_COUNTRY_OPTIONS)
-        countries_select.set_exclusive_items(("all",))
-        countries_select.set_minimum_selection(1)  # an empty selection is rejected by the config schema
+        countries_select.set_placeholder("No country filter")
         countries_select.combo.set_maximum_display_items(0)  # show every selected entry
         countries_select.set_default(tuple(_DEFAULTS.classification.bioclip.filter_arthropods.countries))
         countries_select.setToolTip(
-            "Force BioCLIP to only predict species within the selected countries, based on GBIF "
-            "occurrence records\n(species list is built and cached automatically on first use; "
-            "selecting a country resets Continents to 'all')"
+            f"Force BioCLIP to only predict species with at least {MIN_OCCURRENCE_COUNT} "
+            "GBIF occurrence records in one of the selected countries"
         )
         filter_arthropods_form.add_parameter(countries_select)
 
         continents_select = MultiComboParameter[str]("continents")
         continents_select.set_label("Continents")
         continents_select.set_items(FILTER_CONTINENT_OPTIONS)
-        continents_select.set_exclusive_items(("all",))
-        continents_select.set_minimum_selection(1)  # an empty selection is rejected by the config schema
+        continents_select.set_placeholder("No continent filter")
         continents_select.combo.set_maximum_display_items(0)  # show every selected entry
         continents_select.set_default(tuple(_DEFAULTS.classification.bioclip.filter_arthropods.continents))
         continents_select.setToolTip(
-            "Force BioCLIP to only predict species within the selected continents, based on GBIF "
-            "occurrence records\n(species list is built and cached automatically on first use; "
-            "selecting a continent resets Countries to 'all')"
+            f"Force BioCLIP to only predict species with at least {MIN_OCCURRENCE_COUNT} "
+            "GBIF occurrence records in one of the selected continents"
         )
         filter_arthropods_form.add_parameter(continents_select)
 
-        # Only one region type can restrict predictions: restricting one resets the other
-        def reset_if_restricted(value: tuple, other: MultiComboParameter) -> None:
-            if value != ("all",):
-                other.set_value(("all",))
-
-        countries_select.value_changed.connect(lambda v: reset_if_restricted(v, continents_select))
-        continents_select.value_changed.connect(lambda v: reset_if_restricted(v, countries_select))
+        # Only one region type can restrict predictions: a selection in one disables the other
+        countries_select.value_changed.connect(lambda v: continents_select.setEnabled(not v))
+        continents_select.value_changed.connect(lambda v: countries_select.setEnabled(not v))
 
         ultralytics_form, self.ultralytics_box = create_param_form(
             self.classification_form, "ultralytics", "Ultralytics"

@@ -227,10 +227,8 @@ classification:
       taxa:
       - Insecta
       - Arachnida
-      countries:
-      - all
-      continents:
-      - all
+      countries: []
+      continents: []
   ultralytics:
     enabled: false
     batch_size: 16
@@ -353,8 +351,8 @@ Classification settings applied to cropped detections.
 | `classification.bioclip.rank`                         | `kingdom`, `phylum`, `class`, `order`, `family`, `genus`, `species`                             | `species`                                        | Predict to selected taxonomic level. For ranks above species, species-level probabilities are summed up to the target rank.                                   |
 | `classification.bioclip.filter_arthropods.enabled`    | `bool`                                                                                          | `true`                                           | Restrict BioCLIP predictions to the selected arthropod groups and/or GBIF occurrence in the selected countries or continents.                                 |
 | `classification.bioclip.filter_arthropods.taxa`       | `all`, `Insecta`, `Arachnida`, `Diplopoda`, `Chilopoda`, `Isopoda`                              | `[Insecta, Arachnida]`                           | Arthropod groups that predictions are restricted to; multiple can be selected. `all` covers the whole phylum Arthropoda.                                      |
-| `classification.bioclip.filter_arthropods.countries`  | country codes, or `all`                                                                         | `[all]`                                          | Countries that predictions are restricted to (based on GBIF occurrence records). `all` for no restriction by country. Cannot be combined with `continents`.   |
-| `classification.bioclip.filter_arthropods.continents` | `AFRICA`, `ANTARCTICA`, `ASIA`, `EUROPE`, `NORTH_AMERICA`, `OCEANIA`, `SOUTH_AMERICA`, or `all` | `[all]`                                          | Continents that predictions are restricted to (based on GBIF occurrence records). `all` for no restriction by continent. Cannot be combined with `countries`. |
+| `classification.bioclip.filter_arthropods.countries`  | country codes                                                                                   | `[]`                                             | Countries that predictions are restricted to (based on GBIF occurrence records). Empty for no restriction by country. Cannot be combined with `continents`.   |
+| `classification.bioclip.filter_arthropods.continents` | `AFRICA`, `ANTARCTICA`, `ASIA`, `EUROPE`, `NORTH_AMERICA`, `OCEANIA`, `SOUTH_AMERICA`           | `[]`                                             | Continents that predictions are restricted to (based on GBIF occurrence records). Empty for no restriction by continent. Cannot be combined with `countries`. |
 | `classification.ultralytics.enabled`                  | `bool`                                                                                          | `false`                                          | Enable classification with a custom Ultralytics YOLO classification model.                                                                                    |
 | `classification.ultralytics.batch_size`               | `int` (1-256)                                                                                   | `16`                                             | Batch size used for Ultralytics inference. Higher = faster, but uses more memory (GPU VRAM if device: cuda, system RAM otherwise).                            |
 | `classification.ultralytics.model`                    | `string`                                                                                        | `platform_insect-detect_yolo26s-cls_v1-0-0.onnx` | Filename of the Ultralytics classification model, downloaded automatically from the models registry on first use.                                             |
@@ -368,6 +366,11 @@ Country and continent filters are built on first use by querying the GBIF occurr
 the underlying reference data (`filters/resolve_gbif_country_codes.py`,
 `filters/build_bioclip_gbif_species_mapping.py`) only need to be re-run when GBIF's country
 enumeration or the BioCLIP Tree of Life version changes.
+
+A species is included in a region's filter if GBIF has at least 3 occurrence records of it in
+that region (default of `MIN_OCCURRENCE_COUNT` in `constants.py`). With several countries or
+continents selected, this applies to each region on its own, not to their sum. Rare or rarely
+recorded species can therefore be missing from a filter even if they occur in the region.
 
 Tree of Life species are matched to GBIF species keys of the
 [Catalogue of Life](https://www.catalogueoflife.org/) Extended Release (COL XR), the taxonomy

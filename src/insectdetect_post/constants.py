@@ -98,18 +98,18 @@ PHYLUM_TAXON_KEYS: dict[str, str] = {
 # Minimum GBIF occurrence records required for a taxon to be included in a region filter
 MIN_OCCURRENCE_COUNT: int = 3
 
-# GBIF continent vocabulary (https://api.gbif.org/v1/enumeration/basic/Continent), prefixed with 'all'
+# GBIF continent vocabulary (https://api.gbif.org/v1/enumeration/basic/Continent)
 BIOCLIP_CONTINENT_OPTIONS: tuple[str, ...] = (
-    "all", "AFRICA", "ANTARCTICA", "ASIA", "EUROPE", "NORTH_AMERICA", "OCEANIA", "SOUTH_AMERICA",
+    "AFRICA", "ANTARCTICA", "ASIA", "EUROPE", "NORTH_AMERICA", "OCEANIA", "SOUTH_AMERICA",
 )
 
 
 @cache
 def get_bioclip_country_options() -> tuple[str, ...]:
-    """Return the country codes accepted by the GBIF API, prefixed with 'all'.
+    """Return the country codes accepted by the GBIF API.
 
-    'all' means no BioCLIP region restriction. The CSV is read on first call rather than at
-    import, so that importing any other constant from this module does not require it to exist.
+    The CSV is read on first call rather than at import, so that importing any other constant
+    from this module does not require it to exist.
 
     Raises:
         FileNotFoundError: If the country code CSV has not been generated yet.
@@ -120,7 +120,7 @@ def get_bioclip_country_options() -> tuple[str, ...]:
             f"'{csv_path}' not found. Run 'filters/resolve_gbif_country_codes.py' first."
         )
     with open(csv_path, "r", encoding="utf-8", newline="") as f:
-        return ("all", *(row["iso2"] for row in csv.DictReader(f)))
+        return tuple(row["iso2"] for row in csv.DictReader(f))
 
 # Default thread-pool size for image processing operations (e.g. crop/overlay)
 MAX_WORKERS: int = min((os.cpu_count() or 4) + 4, 32)
