@@ -8,39 +8,40 @@ license-files = ["LICEN[CS]E*"]
 readme = "README.md"
 authors = [{name = "Maximilian Sittinger"}]
 dependencies = [
-    "numpy >=2.5.3,<3",
+    "numpy >=2.5.4,<3",
     "opencv-python-headless >=5.0.0.93,<6",
     "polars >=2.0.0,<3",
     "psutil >=7.2.2,<8",
     "pybioclip >=2.1.6,<3",
-    "pydantic >=2.13.5,<3",
+    "pydantic >=2.14.1,<3",
     "pygbif >=0.7.0,<0.8",
-    "pyside6 >=6.11.2,<7",
+    "pyside6-addons >=6.12.0,<7",
+    "pyside6-essentials >=6.12.0,<7",
     "pyyaml >=6.0.3,<7",
-    "qt-logging >=0.1.1,<1",
+    "qt-logging >=1.0.1,<2",
     "qt-parameters >=1.5.1,<2",
-    "qt-themes >=0.4.0,<1",
-    "ultralytics-opencv-headless >=8.4.143,<9",
+    "qt-themes >=0.4.1,<1",
+    "ultralytics-opencv-headless >=8.4.183,<9",
 ]
 
 [project.optional-dependencies]
 cpu = [
-    "onnx >=1.22.0,<2",
-    "onnxruntime >=1.29.0,<2",
-    "torch >=2.14.0,<3",
-    "torchvision >=0.29.0,<1",
+    "onnx >=1.23.2,<2",
+    "onnxruntime >=1.31.0,<2",
+    "torch >=2.14.1,<3",
+    "torchvision >=0.29.1,<1",
 ]
 cuda126 = [
-    "onnx >=1.21.0,<1.22.0",
+    "onnx >=1.23.2,<2",
     "onnxruntime-gpu >=1.26.0,<1.27.0",
-    "torch >=2.14.0,<3",
-    "torchvision >=0.29.0,<1",
+    "torch >=2.14.1,<3",
+    "torchvision >=0.29.1,<1",
 ]
 cuda132 = [
-    "onnx >=1.22.0,<2",
-    "onnxruntime-gpu >=1.29.0,<2",
-    "torch >=2.14.0,<3",
-    "torchvision >=0.29.0,<1",
+    "onnx >=1.23.2,<2",
+    "onnxruntime-gpu >=1.31.0,<2",
+    "torch >=2.14.1,<3",
+    "torchvision >=0.29.1,<1",
 ]
 
 [project.scripts]
