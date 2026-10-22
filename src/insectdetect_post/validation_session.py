@@ -31,7 +31,6 @@ Functions:
     session_files(): Files and directories of a session.
     delete_session(): Remove a session with all its files.
     source_csv_changed(): Whether the run's final CSV changed after a session started.
-    open_session_log(), close_session_log(): Session log file.
     sort_tracks_chronologically(): Tracks in time order (start time, then track ID).
     anchor_of(): Track ID naming an individual.
     individual_groups(): Individuals from 'same_individual_as' links.
@@ -1168,31 +1167,6 @@ def source_csv_changed(session: Mapping[str, Any], current: Mapping[str, Any]) -
     """
     recorded = (session.get("final_csv") or {}).get("sha256")
     return recorded is not None and recorded != current.get("sha256")
-
-
-def open_session_log(session: ValidationSession) -> logging.Handler:
-    """Append the package log to the session's log file.
-
-    Args:
-        session: Open session.
-
-    Returns:
-        The added handler (close it with close_session_log()).
-    """
-    session.log_path.parent.mkdir(parents=True, exist_ok=True)
-    handler = logging.FileHandler(session.log_path, mode="a", encoding="utf-8")
-    handler.setLevel(logging.DEBUG)
-    handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
-    logging.getLogger("insectdetect_post").addHandler(handler)
-    return handler
-
-
-def close_session_log(handler: logging.Handler | None) -> None:
-    """Detach and close a handler from open_session_log()."""
-    if handler is None:
-        return
-    logging.getLogger("insectdetect_post").removeHandler(handler)
-    handler.close()
 
 
 def sort_tracks_chronologically(keys: Sequence[TrackKey],

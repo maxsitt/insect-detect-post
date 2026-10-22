@@ -44,6 +44,7 @@ from insectdetect_post.constants import (
 from insectdetect_post.dataset_context import CropOnlyEntry, DatasetContext
 from insectdetect_post.exceptions import PipelineCancelled
 from insectdetect_post.image_processor import PostConfig, process_images
+from insectdetect_post.log_utils import close_log_file, open_log_file
 from insectdetect_post.metadata_processor import process_metadata_classified
 
 # Create module-level logger
@@ -136,24 +137,19 @@ class PipelineRunner(QObject):
         log_file_handler = None
 
         try:
-            self._context = self._ensure_context()
             self._create_output_structure()
-            self._save_pipeline_config()
 
-            # Set up log file handler scoped to this package only
-            log_file = self.output_root / f"{self.run_timestamp}_run.log"
-            log_file_handler = logging.FileHandler(log_file, mode="w", encoding="utf-8")
-            log_file_handler.setLevel(logging.DEBUG)
-            log_file_handler.setFormatter(
-                logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-            )
-            logging.getLogger("insectdetect_post").addHandler(log_file_handler)
+            # Record this package and warnings of other packages in the run log
+            log_file_handler = open_log_file(self.output_root / f"{self.run_timestamp}_run.log", mode="w")
 
             logger.info("=" * 60)
             logger.info("Starting post-processing pipeline")
             logger.info("Source: %s", self.source_dir)
             logger.info("Output: %s", self.output_root)
             logger.info("=" * 60)
+
+            self._save_pipeline_config()
+            self._context = self._ensure_context()
 
             # Create merged metadata
             self._merged_metadata_path_value = self._create_merged_metadata()
@@ -247,9 +243,7 @@ class PipelineRunner(QObject):
             logger.exception("Pipeline error")
             self.error.emit(str(e))
         finally:
-            if log_file_handler:
-                logging.getLogger("insectdetect_post").removeHandler(log_file_handler)
-                log_file_handler.close()
+            close_log_file(log_file_handler)
 
 
     def cancel(self) -> None:
@@ -300,7 +294,6 @@ class PipelineRunner(QObject):
         if self.config.processing.overlay.enabled:
             layout.overlays_dir.mkdir(parents=True, exist_ok=True)
 
-        logger.info("Output directory: %s", self.output_root)
         return self.output_root
 
 

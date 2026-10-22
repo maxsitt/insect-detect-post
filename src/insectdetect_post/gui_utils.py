@@ -6,12 +6,11 @@ Author:   Maximilian Sittinger (https://github.com/maxsitt)
 AI use:   Developed with AI coding assistance, reviewed by the author
 Docs:     https://maxsitt.github.io/insect-detect-docs/
 
-Provides the logging setup and theme persistence shared by the processing and
-validation GUIs, styled widget and parameter form factories, conversion between
-nested config dicts and flat ParameterForm values, and source/output path validation.
+Provides the theme persistence shared by the processing and validation GUIs,
+styled widget and parameter form factories, conversion between nested config
+dicts and flat ParameterForm values, and source/output path validation.
 
 Functions:
-    configure_logging(): Configure logging for a GUI entry point.
     load_theme(): Return the stored theme name.
     save_theme(): Store the selected theme name.
     create_groupbox(): Create a styled QGroupBox for a config ParameterForm.
@@ -40,13 +39,6 @@ logger = logging.getLogger(__name__)
 
 # QSettings key of the theme (shared by the processing and the validation window)
 _SETTINGS_KEY_THEME = "theme"
-
-
-def configure_logging() -> None:
-    """Configure logging for a GUI entry point: package at DEBUG, everything else at INFO."""
-    # Replace the handler 'pygbif' installs on import with 'force=True'
-    logging.basicConfig(format="%(levelname)s:%(message)s", level=logging.INFO, force=True)
-    logging.getLogger("insectdetect_post").setLevel(logging.DEBUG)
 
 
 def load_theme() -> str:

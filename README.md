@@ -284,7 +284,7 @@ Each run creates a timestamped directory under `data_processed/` in your output 
 └── data_processed/
     └── 2026-08-05_14-30-12_<source>_processed/
         ├── 2026-08-05_14-30-12_<config>.json  # config snapshot for this run
-        ├── 2026-08-05_14-30-12_run.log        # full log output
+        ├── 2026-08-05_14-30-12_run.log        # log file
         ├── 2026-08-05_14-30-12_stats.json     # per-step durations
         ├── filters/                           # BioCLIP region filters + mapping provenance
         ├── metadata/

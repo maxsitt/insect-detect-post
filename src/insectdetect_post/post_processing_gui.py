@@ -83,7 +83,6 @@ from insectdetect_post.constants import (
 from insectdetect_post.dataset_context import DatasetContext
 from insectdetect_post.dataset_inspector import DatasetInspector
 from insectdetect_post.gui_utils import (
-    configure_logging,
     create_groupbox,
     create_num_param,
     create_param_form,
@@ -93,6 +92,7 @@ from insectdetect_post.gui_utils import (
     restore_enabled_values,
     save_theme,
 )
+from insectdetect_post.log_utils import LogFormatter, configure_logging
 from insectdetect_post.pipeline_runner import PipelineRunner
 from insectdetect_post.styled_button import StyledButton
 from insectdetect_post.update_button import UpdateButton
@@ -1415,6 +1415,7 @@ class MainWindow(QMainWindow):
 
         # Create log viewer (bottom pane of the splitter, can be collapsed completely)
         self.log_viewer = LogViewer(self._log_cache)
+        self.log_viewer.set_formatter(LogFormatter(color_level=True))
         self.log_viewer.set_levels([logging.ERROR, logging.WARNING, logging.INFO])
         self.log_viewer.setMinimumHeight(_LOG_MIN_HEIGHT)
         self.log_viewer.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)

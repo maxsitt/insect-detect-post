@@ -150,13 +150,13 @@ from insectdetect_post.constants import (
 )
 from insectdetect_post.exceptions import RunSearchCancelled, ValidationRunError
 from insectdetect_post.gui_utils import (
-    configure_logging,
     create_groupbox,
     create_num_param,
     load_theme,
     resolve_and_validate_path,
     save_theme,
 )
+from insectdetect_post.log_utils import close_log_file, configure_logging, open_log_file
 from insectdetect_post.styled_button import StyledButton
 from insectdetect_post.update_button import UpdateButton
 from insectdetect_post.validation_multi import (
@@ -203,12 +203,10 @@ from insectdetect_post.validation_session import (
     Verdict,
     allowed_qualifier,
     anchor_of,
-    close_session_log,
     delete_session,
     derive_verdict,
     has_qualifier,
     join_links,
-    open_session_log,
     parse_links,
     qualifier_mark,
     session_files,
@@ -3746,7 +3744,7 @@ class ValidationPage(QWidget):
         """Open a session: log file, track list, sort options, zoom and the start track."""
         self.save_now()
         self._close_session_log()  # one log per open session
-        self._session_log = open_session_log(session)
+        self._session_log = open_log_file(session.log_path, mode="a")
         logger.info("=" * 60)
         logger.info("Validation session %s of '%s' opened by '%s'", session.validation_session_id, run.root.name,
                     session.validator)
@@ -4971,7 +4969,7 @@ class ValidationPage(QWidget):
             validated, total = self.session.progress()
             logger.info("Validation session %s closed: %d/%d tracks validated", self.session.validation_session_id,
                         validated, total)
-        close_session_log(self._session_log)
+        close_log_file(self._session_log)
         self._session_log = None
 
 
