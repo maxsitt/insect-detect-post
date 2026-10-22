@@ -78,11 +78,11 @@ from insectdetect_post.constants import (
     MODELS_JSON,
     MODELS_PATH,
     PROG_BAR_STYLESHEET,
-    THEME_DEFAULT,
 )
 from insectdetect_post.dataset_context import DatasetContext
 from insectdetect_post.dataset_inspector import DatasetInspector
 from insectdetect_post.gui_utils import (
+    active_theme,
     create_groupbox,
     create_num_param,
     create_param_form,
@@ -1470,13 +1470,9 @@ class MainWindow(QMainWindow):
 
     def _style_progress_bar(self) -> None:
         """Apply the progress bar stylesheet with colors from the active theme."""
-        theme = qt_themes.get_theme() or qt_themes.get_theme(THEME_DEFAULT)
-        if theme is None:
-            return
+        theme = active_theme()
         border = theme.crust if theme.is_dark_theme() else theme.surface2
         background, text = theme.base, theme.text
-        if border is None or background is None or text is None:
-            return
         self.progress_bar.setStyleSheet(PROG_BAR_STYLESHEET.format(
             border=border.name(), background=background.name(), text=text.name()
         ))

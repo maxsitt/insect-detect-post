@@ -135,7 +135,6 @@ from insectdetect_post.constants import (
     SETTING_COLUMN,
     SETTINGS_APP,
     SETTINGS_ORG,
-    THEME_DEFAULT,
     TRACK_KEY_COLUMNS,
     VALIDATION_MAX_PER_STRATUM_DEFAULT,
     VALIDATION_MIN_PER_STRATUM_DEFAULT,
@@ -150,6 +149,7 @@ from insectdetect_post.constants import (
 )
 from insectdetect_post.exceptions import RunSearchCancelled, ValidationRunError
 from insectdetect_post.gui_utils import (
+    active_theme,
     create_groupbox,
     create_num_param,
     load_theme,
@@ -2123,7 +2123,7 @@ class TrackInfoPanel(QWidget):
             f" · {self._crops_text(candidates, row)}"
         )
         self.pred_lineage_label.setText(lineage)
-        self.pred_lineage_label.setStyleSheet(f"color: {_theme_color('subtext0', '#9E9E9E')}")
+        self.pred_lineage_label.setStyleSheet(f"color: {active_theme().subtext0.name()}")
         self.candidates_table.setRowCount(candidates.height)
         for i, cand in enumerate(candidates.to_dicts()):
             values = [str(cand.get("candidate", "-")), _fmt(cand.get("candidate_prob_weighted"), 3),
@@ -2591,7 +2591,7 @@ class VerdictPanel(QWidget):
                                         + ("Entries" if self._blind else "entries")
                                         + " in 'Same individual as' stay with the shown track")
         else:
-            self.batch_label.setText(f"<span style='color:{_theme_color('subtext0', '#9E9E9E')}'>Single track - "
+            self.batch_label.setText(f"<span style='color:{active_theme().subtext0.name()}'>Single track - "
                                      "Ctrl/Shift-click in the list to select several.</span>")
             self.batch_label.setToolTip("")
 
@@ -3002,7 +3002,7 @@ class VerdictPanel(QWidget):
         verdict_type, agree_rank, lowest = derive_verdict(self._model, self._verdict, self._model_rank)
         prefill = f" · <i>{self._prefill_note}</i>" if self._prefill_note else ""
         if not self._verdict.validated:
-            self.status_label.setText(f"<span style='color:{_theme_color('subtext0', '#9E9E9E')}'>Not validated</span>"
+            self.status_label.setText(f"<span style='color:{active_theme().subtext0.name()}'>Not validated</span>"
                                       + prefill)
             self.status_label.setToolTip(self._prefill_note)
             return
@@ -3039,7 +3039,7 @@ class VerdictPanel(QWidget):
                     entries.append((f"← ID {member['track_id']}: ", human))
         entries.extend(("", lineage) for lineage in recent)
         if not entries:
-            self.recent_row.add_widget(QLabel(f"<span style='color:{_theme_color('subtext0', '#9E9E9E')}'>-</span>"))
+            self.recent_row.add_widget(QLabel(f"<span style='color:{active_theme().subtext0.name()}'>-</span>"))
         for prefix, lineage in entries:
             deepest = next((lineage[r] for r in reversed(VALIDATION_RANKS)
                             if lineage.get(r) and lineage[r] != INDET_LABEL), None)
@@ -3136,7 +3136,7 @@ class VerdictPanel(QWidget):
             self.link_btn.style().polish(self.link_btn)
         others = [m for m in self._link_group if not m.get("is_current")]
         if not others or not link_ok:
-            self.individual_label.setText(f"<span style='color:{_theme_color('subtext0', '#9E9E9E')}'>-</span>")
+            self.individual_label.setText(f"<span style='color:{active_theme().subtext0.name()}'>-</span>")
             self.individual_label.setToolTip("")
         else:
             parts = []
@@ -3147,11 +3147,11 @@ class VerdictPanel(QWidget):
                 elif m.get("in_queue"):
                     parts.append(f"<a href='{tid}' style='color:{COLOR_FLAG_SAME_INDIVIDUAL}'>ID {tid}</a>")
                 else:
-                    parts.append(f"<span style='color:{_theme_color('subtext0', '#9E9E9E')}'>ID {tid}</span>")
+                    parts.append(f"<span style='color:{active_theme().subtext0.name()}'>ID {tid}</span>")
                 if m.get("warning"):
                     parts[-1] += f" <span style='color:{COLOR_VERDICT['corrected']}'>⚠ {m['warning']}</span>"
                 elif m.get("note"):
-                    parts[-1] += f" <span style='color:{_theme_color('subtext0', '#9E9E9E')}'>({m['note']})</span>"
+                    parts[-1] += f" <span style='color:{active_theme().subtext0.name()}'>({m['note']})</span>"
             first = next((m for m in self._link_group if m.get("start_time")), None)
             last = next((m for m in reversed(self._link_group) if m.get("end_time")), None)
             span = (f" · {_fmt_time(first['start_time'])[11:]}–{_fmt_time(last['end_time'])[11:]}"
@@ -3163,7 +3163,7 @@ class VerdictPanel(QWidget):
             if self._link_order_hint:
                 notes.append("sort chronologically to step through neighboring tracks")
             if notes:
-                text += f" · <span style='color:{_theme_color('subtext0', '#9E9E9E')}'>{'; '.join(notes)}</span>"
+                text += f" · <span style='color:{active_theme().subtext0.name()}'>{'; '.join(notes)}</span>"
             self.individual_label.setText(text)
             self.individual_label.setToolTip("; ".join(notes) if notes else "")
 
@@ -5286,7 +5286,7 @@ class StatsDialog(QDialog):
             if item is not None and (widget := item.widget()) is not None:
                 widget.hide()  # deleted on return to the event loop, not painted until then
                 widget.deleteLater()
-        text_color = QColor(_theme_color("text", "#E0E0E0"))
+        text_color = QColor(active_theme().text)
         weighted = self.stratified
 
         # Accuracy per rank: the stratum-weighted one for a stratified sample
@@ -5562,18 +5562,9 @@ def _header_item(table: QTableWidget, col: int) -> QTableWidgetItem:
     return item
 
 
-def _theme_color(attr: str, fallback: str) -> str:
-    """Return a color of the active theme as hex, 'fallback' if the theme lacks it."""
-    theme = qt_themes.get_theme() or qt_themes.get_theme(THEME_DEFAULT)
-    color = getattr(theme, attr, None) if theme else None
-    return color.name() if color is not None else fallback
-
-
 def _error_color() -> str:
     """Return the error text color for the active theme."""
-    theme = qt_themes.get_theme() or qt_themes.get_theme(THEME_DEFAULT)
-    dark = theme.is_dark_theme() if theme is not None else True
-    return COLOR_ERROR_TEXT_DARK if dark else COLOR_ERROR_TEXT_LIGHT
+    return COLOR_ERROR_TEXT_DARK if active_theme().is_dark_theme() else COLOR_ERROR_TEXT_LIGHT
 
 
 def _fmt_selection(sampling: dict[str, Any], full: bool = False) -> str:

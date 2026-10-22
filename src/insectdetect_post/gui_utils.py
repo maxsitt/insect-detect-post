@@ -11,6 +11,7 @@ styled widget and parameter form factories, conversion between nested config
 dicts and flat ParameterForm values, and source/output path validation.
 
 Functions:
+    active_theme(): Return the applied theme, or the default theme before one is applied.
     load_theme(): Return the stored theme name.
     save_theme(): Store the selected theme name.
     create_groupbox(): Create a styled QGroupBox for a config ParameterForm.
@@ -39,6 +40,14 @@ logger = logging.getLogger(__name__)
 
 # QSettings key of the theme (shared by the processing and the validation window)
 _SETTINGS_KEY_THEME = "theme"
+
+
+def active_theme() -> qt_themes.Theme:
+    """Return the applied theme, or the default theme before one is applied."""
+    theme = qt_themes.get_theme() or qt_themes.get_theme(THEME_DEFAULT)
+    if theme is None:
+        raise RuntimeError(f"Default theme '{THEME_DEFAULT}' is not available")
+    return theme
 
 
 def load_theme() -> str:
