@@ -8,7 +8,8 @@ Docs:     https://maxsitt.github.io/insect-detect-docs/
 
 Functions:
     rename_legacy_columns(): Lowercase and rename legacy metadata columns to their canonical form.
-    parse_timestamp_column(): Parse a timestamp column, while handling legacy format.
+    parse_timestamp_column(): Parse a timestamp column, while handling legacy format and UTC offsets.
+    timestamp_offset(): Extract the UTC offset suffix of a timestamp column.
     parse_crop_stem(): Parse a crop filename stem to (timestamp, track_id), while handling legacy format.
 """
 
@@ -43,6 +44,9 @@ FILENAME_TIMESTAMP_FORMAT_PY = "%Y-%m-%d_%H-%M-%S-%f"
 _ID_MARKER = "_ID"
 _TRACK_ID_RE = re.compile(r"\d+")
 
+# UTC offset suffix of ISO timestamps written from timezone-aware datetimes (e.g. '+00:00')
+_UTC_OFFSET_PATTERN = r"(?:[+-]\d{2}:\d{2}|Z)$"
+
 
 def rename_legacy_columns(df: pl.DataFrame) -> pl.DataFrame:
     """Lowercase and rename legacy metadata columns to their canonical form."""
@@ -51,12 +55,21 @@ def rename_legacy_columns(df: pl.DataFrame) -> pl.DataFrame:
 
 
 def parse_timestamp_column(col: str = "timestamp") -> tuple[pl.Expr, pl.Expr]:
-    """Parse a timestamp column, while handling legacy format."""
-    iso = pl.col(col).str.strptime(pl.Datetime, ISO_TIMESTAMP_FORMAT, strict=False)
+    """Parse a timestamp column, while handling legacy format and UTC offsets.
+
+    A UTC offset is dropped without conversion: the time is kept as written, so it still
+    matches the timestamp embedded in the full-frame and crop filenames.
+    """
+    iso = pl.col(col).str.replace(_UTC_OFFSET_PATTERN, "").str.strptime(pl.Datetime, ISO_TIMESTAMP_FORMAT, strict=False)
     legacy = pl.col(col).str.strptime(pl.Datetime, LEGACY_TIMESTAMP_FORMAT, strict=False)
     parsed = pl.coalesce([iso, legacy])
     is_legacy_format = iso.is_null() & legacy.is_not_null()
     return parsed, is_legacy_format
+
+
+def timestamp_offset(col: str = "timestamp") -> pl.Expr:
+    """Extract the UTC offset suffix of a timestamp column (e.g. '+00:00'), null if there is none."""
+    return pl.col(col).str.extract(f"({_UTC_OFFSET_PATTERN})", 1)
 
 
 def parse_crop_stem(stem: str) -> tuple[str, int] | None:

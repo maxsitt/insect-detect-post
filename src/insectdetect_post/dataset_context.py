@@ -34,6 +34,7 @@ from insectdetect_post.dataset_harmonizer import (
     parse_crop_stem,
     parse_timestamp_column,
     rename_legacy_columns,
+    timestamp_offset,
 )
 
 # Create module-level logger
@@ -306,6 +307,7 @@ class DatasetContext:
         total_detections = 0
         camera_info: dict[str, CameraInfo] = {}
         detection_frame_timestamps: set[str] = set()
+        timestamp_offsets: dict[Path, list[str]] = {}
         stats = {"with_frame": 0, "crop_only": 0, "missing_both": 0}
         unlinkable_files = 0
         unlinkable_detections = 0
@@ -325,7 +327,7 @@ class DatasetContext:
             try:
                 rows, with_frame, crop_only, missing_both, has_file_path_col = self._process_metadata_file(
                     meta_path, required_cols, full_frame_index, crop_index,
-                    camera_info, detection_frame_timestamps
+                    camera_info, detection_frame_timestamps, timestamp_offsets
                 )
                 total_detections += rows
                 stats["with_frame"] += with_frame
@@ -347,6 +349,14 @@ class DatasetContext:
                 "%d detections use crops only (legacy format, full frames not linkable) "
                 "- expected, not an error",
                 unlinkable_detections
+            )
+
+        if timestamp_offsets:
+            offsets = sorted({offset for file_offsets in timestamp_offsets.values() for offset in file_offsets})
+            logger.warning(
+                "Timestamps in %d of %d metadata files carry a UTC offset (%s); "
+                "kept as written, not converted to local time",
+                len(timestamp_offsets), len(self.metadata_files), ", ".join(offsets)
             )
 
         for frame_path in all_full_frames:
@@ -390,10 +400,11 @@ class DatasetContext:
         full_frame_index: dict[str, Path],
         crop_index: dict[tuple[str, int], Path],
         camera_info: dict[str, CameraInfo],
-        detection_frame_timestamps: set[str]
+        detection_frame_timestamps: set[str],
+        timestamp_offsets: dict[Path, list[str]]
     ) -> tuple[int, int, int, int, bool]:
         """Process a single metadata file, updating detection_frame_map/crop_only_map (self)
-        and the caller-owned camera_info/detection_frame_timestamps accumulators in place.
+        and the caller-owned camera_info/detection_frame_timestamps/timestamp_offsets accumulators in place.
 
         Returns (rows, with_frame, crop_only, missing_both, has_file_path_col) for this file.
         """
@@ -426,6 +437,10 @@ class DatasetContext:
 
         if len(df) == 0:
             return 0, 0, 0, 0, has_file_path_col
+
+        offsets = df.select(timestamp_offset("timestamp").drop_nulls().unique().sort()).to_series().to_list()
+        if offsets:
+            timestamp_offsets[meta_path] = offsets
 
         if has_filename_col:
             # Current format: filename column provides the frame stem directly
