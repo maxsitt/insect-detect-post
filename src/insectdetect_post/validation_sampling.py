@@ -196,8 +196,8 @@ def assign_strata(tracks: pl.DataFrame, rank: str | None, prob_edges: list[float
         labels = prob_bin_labels(prob_edges)
         inner_breaks = prob_edges[1:-1]
         df = df.with_columns(
-            pl.col("pred_prob_weighted").cast(pl.Float64, strict=False)
-            .cut(breaks=inner_breaks, labels=labels, left_closed=True)
+            pl.col("pred_prob_weighted").cast(pl.Float64, strict=False).fill_nan(None)
+            .bin_intervals(inner_breaks, labels=labels)
             .cast(pl.String).fill_null(NONE_LABEL).alias("stratum_prob_bin")
         )
     else:

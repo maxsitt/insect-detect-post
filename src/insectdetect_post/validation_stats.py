@@ -428,8 +428,8 @@ def reliability_by_prob_bin(
         stratified sample only.
     """
     labels = prob_bin_labels(edges)
-    prob_bin = (pl.col("pred_prob_weighted").cast(pl.Float64, strict=False)
-                .cut(breaks=edges[1:-1], labels=labels, left_closed=True).cast(pl.String))
+    prob_bin = (pl.col("pred_prob_weighted").cast(pl.Float64, strict=False).fill_nan(None)
+                .bin_intervals(edges[1:-1], labels=labels).cast(pl.String))
     binned = frame.filter(pl.col("validated")).with_columns(prob_bin.alias("prob_bin"))
     mask = _comparable_mask(rank, include_not_assessable, include_uncertain)
     rows = []
