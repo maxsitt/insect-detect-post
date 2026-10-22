@@ -9,3 +9,8 @@ Docs:     https://maxsitt.github.io/insect-detect-docs/
 This package provides post-processing tools for Insect Detect camera trap data,
 including image processing, classification, metadata filtering, and validation.
 """
+
+import os
+
+# Keep ultralytics from pip-installing packages at runtime, which would bypass uv.lock
+os.environ.setdefault("YOLO_AUTOINSTALL", "False")
