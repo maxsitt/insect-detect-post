@@ -31,7 +31,7 @@ from typing import Literal
 _PACKAGE_LOGGER = "insectdetect_post"
 
 # Loggers of other packages whose INFO records are noise and are set to log level WARNING
-_QUIET_LOGGERS = ("httpx", "httpcore")
+_QUIET_LOGGERS = ("httpx2", "httpcore2")
 
 
 class LogFormatter(logging.Formatter):
