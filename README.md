@@ -244,8 +244,8 @@ metadata:
     min_pred_prob: 0.1
   filter_tracks:
     enabled: false
-    min_dur_s: 2
-    max_dur_s: 3600
+    min_dur_s: 2.0
+    max_dur_s: 3600.0
     min_det_conf_mean: 0.2
     min_pred_prob_weighted: 0.2
   estimate_size:
@@ -402,19 +402,19 @@ Metadata processing settings applied to the final results. Crop filters drop sin
 track values (duration, mean confidence, weighted probability) are calculated, track filters then
 drop whole tracking IDs.
 
-| Setting                                         | Type / Options  | Default | Description                                                                                                    |
-|-------------------------------------------------|-----------------|---------|----------------------------------------------------------------------------------------------------------------|
-| `metadata.filter_crops.enabled`                 | `bool`          | `false` | Filter crops based on detection confidence and prediction probability, before track aggregation.               |
-| `metadata.filter_crops.min_det_conf`            | `float` (0-1)   | `0.2`   | Minimum detection confidence required to keep a crop (`0` turns it off).                                       |
-| `metadata.filter_crops.min_pred_prob`           | `float` (0-1)   | `0.1`   | Minimum probability of the crop's top-1 prediction required to keep a crop (`0` turns it off).                 |
-| `metadata.filter_tracks.enabled`                | `bool`          | `false` | Filter tracking IDs based on tracking duration, mean detection confidence and weighted prediction probability. |
-| `metadata.filter_tracks.min_dur_s`              | `int` (0-600)   | `2`     | Minimum total tracking duration (seconds) required to keep a tracking ID (`0` turns it off).                   |
-| `metadata.filter_tracks.max_dur_s`              | `int` (1-21600) | `3600`  | Maximum total tracking duration (seconds) allowed to keep a tracking ID.                                       |
-| `metadata.filter_tracks.min_det_conf_mean`      | `float` (0-1)   | `0.2`   | Minimum mean detection confidence required to keep a tracking ID (`0` turns it off).                           |
-| `metadata.filter_tracks.min_pred_prob_weighted` | `float` (0-1)   | `0.2`   | Minimum weighted mean probability of the final prediction required to keep a tracking ID (`0` turns it off).   |
-| `metadata.estimate_size.enabled`                | `bool`          | `false` | Estimate physical size based on bounding box dimensions and frame size (millimeters).                          |
-| `metadata.estimate_size.frame_width_mm`         | `int` (10-1000) | `230`   | Physical width of the camera frame (millimeters).                                                              |
-| `metadata.estimate_size.frame_height_mm`        | `int` (10-1000) | `130`   | Physical height of the camera frame (millimeters).                                                             |
+| Setting                                         | Type / Options    | Default  | Description                                                                                                     |
+|-------------------------------------------------|-------------------|----------|-----------------------------------------------------------------------------------------------------------------|
+| `metadata.filter_crops.enabled`                 | `bool`            | `false`  | Filter crops based on detection confidence and prediction probability, before track aggregation.                |
+| `metadata.filter_crops.min_det_conf`            | `float` (0-1)     | `0.2`    | Minimum detection confidence required to keep a crop (`0` turns it off).                                        |
+| `metadata.filter_crops.min_pred_prob`           | `float` (0-1)     | `0.1`    | Minimum probability of the crop's top-1 prediction required to keep a crop (`0` turns it off).                  |
+| `metadata.filter_tracks.enabled`                | `bool`            | `false`  | Filter tracking IDs based on tracking duration, mean detection confidence and weighted prediction probability.  |
+| `metadata.filter_tracks.min_dur_s`              | `float` (0-600)   | `2.0`    | Minimum total tracking duration (seconds, one decimal place) required to keep a tracking ID (`0` turns it off). |
+| `metadata.filter_tracks.max_dur_s`              | `float` (1-21600) | `3600.0` | Maximum total tracking duration (seconds, one decimal place) allowed to keep a tracking ID.                     |
+| `metadata.filter_tracks.min_det_conf_mean`      | `float` (0-1)     | `0.2`    | Minimum mean detection confidence required to keep a tracking ID (`0` turns it off).                            |
+| `metadata.filter_tracks.min_pred_prob_weighted` | `float` (0-1)     | `0.2`    | Minimum weighted mean probability of the final prediction required to keep a tracking ID (`0` turns it off).    |
+| `metadata.estimate_size.enabled`                | `bool`            | `false`  | Estimate physical size based on bounding box dimensions and frame size (millimeters).                           |
+| `metadata.estimate_size.frame_width_mm`         | `int` (10-1000)   | `230`    | Physical width of the camera frame (millimeters).                                                               |
+| `metadata.estimate_size.frame_height_mm`        | `int` (10-1000)   | `130`    | Physical height of the camera frame (millimeters).                                                              |
 
 ---
 

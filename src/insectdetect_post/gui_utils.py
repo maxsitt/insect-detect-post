@@ -139,7 +139,8 @@ def create_num_param(
     default: float,
     param_type: Literal["int", "float"] = "int",
     tooltip: str = "",
-    slider_max: float | None = None
+    slider_max: float | None = None,
+    decimals: int = 2
 ) -> IntParameter | FloatParameter:
     """Create a numeric parameter with slider.
 
@@ -152,6 +153,7 @@ def create_num_param(
         param_type: "int" for an IntParameter, "float" for a FloatParameter.
         tooltip: Optional tooltip for the parameter.
         slider_max: Lower slider maximum for the usual range (larger values can still be typed).
+        decimals: Decimal places a FloatParameter accepts.
 
     Returns:
         Configured IntParameter or FloatParameter instance.
@@ -161,7 +163,7 @@ def create_num_param(
     if slider_max is None:
         slider_max = max_val
     if isinstance(param, FloatParameter):
-        param.set_decimals(2)
+        param.set_decimals(decimals)
         param.set_line_min(float(min_val))
         param.set_line_max(float(max_val))
         param.set_slider_min(float(min_val))

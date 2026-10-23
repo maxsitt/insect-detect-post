@@ -546,6 +546,7 @@ class ConfigWidget(QWidget):
             "min_dur_s", "Minimum Duration (s)",
             min_val=lo, max_val=hi,
             default=_DEFAULTS.metadata.filter_tracks.min_dur_s,
+            param_type="float", decimals=1,
             slider_max=60,
             tooltip="Minimum required tracking duration (seconds) to retain a tracking ID - '0' turns it off"
         ))
@@ -555,6 +556,7 @@ class ConfigWidget(QWidget):
             "max_dur_s", "Maximum Duration (s)",
             min_val=lo, max_val=hi,
             default=_DEFAULTS.metadata.filter_tracks.max_dur_s,
+            param_type="float", decimals=1,
             slider_max=6000,
             tooltip="Maximum allowed tracking duration (seconds) to retain a tracking ID"
         ))

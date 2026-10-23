@@ -215,10 +215,16 @@ class FilterCropsConfig(BaseModel):
 class FilterTrackingConfig(BaseModel):
     """Filter tracking IDs based on tracking duration, mean detection confidence and weighted probability."""
     enabled: bool = False
-    min_dur_s: int = Field(default=2, ge=0, le=600)
-    max_dur_s: int = Field(default=3600, ge=1, le=21600)
+    min_dur_s: float = Field(default=2.0, ge=0.0, le=600.0, multiple_of=0.1)
+    max_dur_s: float = Field(default=3600.0, ge=1.0, le=21600.0, multiple_of=0.1)
     min_det_conf_mean: float = Field(default=0.2, ge=0.0, le=1.0)
     min_pred_prob_weighted: float = Field(default=0.2, ge=0.0, le=1.0)
+
+    @field_validator("min_dur_s", "max_dur_s")
+    @classmethod
+    def _round_duration(cls, value: float) -> float:
+        """Round to one decimal place: 'multiple_of' accepts float noise such as 33.300000000000004 (GUI slider)."""
+        return round(value, 1)
 
     @model_validator(mode="after")
     def min_must_be_less_than_max(self) -> FilterTrackingConfig:

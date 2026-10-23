@@ -197,8 +197,8 @@ class SamplingConfig:
     period_filter_granularity: str | None = None
     period_filter_values: list[str] = field(default_factory=list)
     setting_filter_values: list[str] = field(default_factory=list)
-    min_duration_s: int | None = None
-    max_duration_s: int | None = None
+    min_duration_s: float | None = None
+    max_duration_s: float | None = None
     stratum_rank: str | None = None
     prob_edges: list[float] | None = None
     stratum_setting: bool = False

@@ -83,7 +83,7 @@ def filter_settings(tracks: pl.DataFrame, settings: list[str] | None) -> pl.Data
     return tracks.filter(pl.col(SETTING_COLUMN).fill_null(NONE_LABEL).is_in(settings))
 
 
-def filter_duration(tracks: pl.DataFrame, min_s: int | None, max_s: int | None) -> pl.DataFrame:
+def filter_duration(tracks: pl.DataFrame, min_s: float | None, max_s: float | None) -> pl.DataFrame:
     """Keep tracks whose duration lies within 'min_s' and 'max_s' (inclusive; tracks without one are dropped)."""
     if (min_s is None and max_s is None) or "duration_s" not in tracks.columns:
         return tracks

@@ -34,7 +34,7 @@ import time
 from collections.abc import Callable, Sequence
 from itertools import pairwise
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import polars as pl
 import qt_themes
@@ -106,6 +106,7 @@ from PySide6.QtWidgets import (
 from qt_parameters import (
     BoolParameter,
     ComboParameter,
+    FloatParameter,
     MultiComboParameter,
     ParameterForm,
     PathParameter,
@@ -793,15 +794,15 @@ class SetupPage(QWidget):
         self.filter_form = ParameterForm("filter")
         self.filter_form.set_flat(True)
         lo, hi = _duration_constraints("min_dur_s")
-        self.min_duration_param = create_num_param(
+        self.min_duration_param = cast(FloatParameter, create_num_param(
             "min_duration_s", "Min. track duration (s)", lo, hi, _TRACK_FILTER_DEFAULTS.min_dur_s,
-            slider_max=60)
+            param_type="float", slider_max=60, decimals=1))
         self.filter_form.add_parameter(self.min_duration_param, checkable=True)
         self.min_duration_check = self.filter_form.widgets()["min_duration_s_enabled"]
         lo, hi = _duration_constraints("max_dur_s")
-        self.max_duration_param = create_num_param(
+        self.max_duration_param = cast(FloatParameter, create_num_param(
             "max_duration_s", "Max. track duration (s)", lo, hi, _TRACK_FILTER_DEFAULTS.max_dur_s,
-            slider_max=6000)
+            param_type="float", slider_max=6000, decimals=1))
         self.filter_form.add_parameter(self.max_duration_param, checkable=True)
         self.max_duration_check = self.filter_form.widgets()["max_duration_s_enabled"]
         field_width = max(p.line.sizeHint().width() for p in (self.min_duration_param, self.max_duration_param))
@@ -1294,7 +1295,7 @@ class SetupPage(QWidget):
                                     (self.max_duration_check, self.max_duration_param, sampling.max_duration_s)):
             check.set_value(value is not None)
             if value is not None:
-                param.set_value(int(value))
+                param.set_value(float(value))
         self._updating = False
         self._refresh_filter_lists()  # list the session's taxa and periods before checking them
         self._updating = True
@@ -1498,8 +1499,8 @@ class SetupPage(QWidget):
             check.set_value(False)
             lo, hi = _duration_constraints(key)
             run_value = run_filters.get(key)
-            start = getattr(_TRACK_FILTER_DEFAULTS, key) if run_value is None else round(run_value)
-            param.set_value(min(max(int(start), int(lo)), int(hi)))
+            start = getattr(_TRACK_FILTER_DEFAULTS, key) if run_value is None else run_value
+            param.set_value(min(max(round(float(start), 1), lo), hi))
         self.preview_table.setColumnHidden(0, not settings_available)
         self._updating = False
         self._refresh_filter_lists()
@@ -1558,10 +1559,10 @@ class SetupPage(QWidget):
         """Return the selected camera settings (empty if the filter is off)."""
         return list(self.settings_values_param.value()) if self.settings_filter_check.value() else []
 
-    def _duration_filter(self) -> tuple[int | None, int | None]:
-        """Return '(min, max)' of the duration filter in seconds, None for a bound that is off."""
-        return (int(self.min_duration_param.value()) if self.min_duration_check.value() else None,
-                int(self.max_duration_param.value()) if self.max_duration_check.value() else None)
+    def _duration_filter(self) -> tuple[float | None, float | None]:
+        """Return '(min, max)' of the duration filter in seconds (one decimal place), None for a bound that is off."""
+        return (round(self.min_duration_param.value(), 1) if self.min_duration_check.value() else None,
+                round(self.max_duration_param.value(), 1) if self.max_duration_check.value() else None)
 
     def _set_duration_tooltips(self, run_filters: dict[str, float] | None) -> None:
         """Explain the duration bounds, with the run's own duration filter if it applied one."""
