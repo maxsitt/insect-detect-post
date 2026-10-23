@@ -197,6 +197,7 @@ class ValidationRun:
             )
         model_rank = active_ranks[-1]
         tracks = tracks.with_columns(pl.col("pred_prob_weighted").cast(pl.Float64, strict=False))
+        tracks = _fractional_durations(tracks)
         candidates = (
             _drop_keyless_rows(pl.read_csv(candidates_path, schema_overrides=_KEY_SCHEMA), candidates_path.name)
             if candidates_path.exists() else pl.DataFrame()
@@ -580,6 +581,19 @@ def _drop_keyless_rows(frame: pl.DataFrame, source_name: str) -> pl.DataFrame:
         logger.warning("Dropped %d of %d rows without a track key in '%s' (blank or incomplete lines)",
                        dropped, frame.height, source_name)
     return kept
+
+
+def _fractional_durations(tracks: pl.DataFrame) -> pl.DataFrame:
+    """Recompute 'duration_s' from the start and end times if it holds whole seconds (older runs).
+
+    Older runs truncated the duration to whole seconds, so their column is read as integers.
+    A track whose times cannot be parsed keeps its whole-second duration.
+    """
+    if not {"duration_s", "start_time", "end_time"} <= set(tracks.columns) or not tracks["duration_s"].dtype.is_integer():
+        return tracks
+    start, end = (pl.col(c).cast(pl.String).str.to_datetime(strict=False) for c in ("start_time", "end_time"))
+    recomputed = (end - start).dt.total_seconds(fractional=True).round(2)
+    return tracks.with_columns(pl.coalesce(recomputed, pl.col("duration_s").cast(pl.Float64)).alias("duration_s"))
 
 
 def _spans(frame: pl.DataFrame) -> dict[TrackKey, tuple[int, int]]:

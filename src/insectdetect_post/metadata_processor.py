@@ -245,7 +245,7 @@ def process_metadata_classified(
         .agg(agg_exprs)
         .with_columns([
             (pl.col("end_time") - pl.col("start_time"))
-            .dt.total_seconds()
+            .dt.total_seconds(fractional=True)
             .round(2)
             .alias("duration_s")
         ])
