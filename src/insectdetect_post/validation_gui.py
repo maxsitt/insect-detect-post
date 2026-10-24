@@ -330,7 +330,8 @@ _SEX_LABELS = {"female": "♀ female", "male": "♂ male"}
 
 # Verdict panel: button tooltips
 _AGREE_TOOLTIP = "The model prediction is correct down to its classification rank"
-_BLIND_AGREE_TOOLTIP = "Not available in blind sessions: it would adopt the model prediction instead of your determination"
+_BLIND_AGREE_TOOLTIP = ("Not available in blind sessions: it would adopt the model prediction instead of your "
+                        "determination")
 _LINK_BTN_TOOLTIP = ("This track continues an earlier track of the same individual (lost track, new ID); "
                      "choose the track next to it")
 # 'Same individual' button with several tracks selected (see ValidationPage._batch_link_state())
@@ -1492,7 +1493,8 @@ class SetupPage(QWidget):
         strata_ranks = available_strata_ranks(self.run.active_ranks, self.run.model_rank)
         self.stratum_rank_param.set_items([(_RANK_LABELS[r], r) for r in strata_ranks] or [("Order", "order")])
         # Explicit: set_items() keeps the previous value when the ranks equal the previous run's
-        self.stratum_rank_param.set_value("family" if "family" in strata_ranks else self.stratum_rank_param.items()[0][1])
+        default_rank = "family" if "family" in strata_ranks else self.stratum_rank_param.items()[0][1]
+        self.stratum_rank_param.set_value(default_rank)
         # Setting filter and strata need at least two setting groups
         settings_available = setting_strata_available(self.run.tracks)
         self.settings_filter_check.set_value(False)
@@ -5372,8 +5374,9 @@ class StatsDialog(QDialog):
             unvalidated = unvalidated_strata(self.frame)
             if validated and unvalidated.height:
                 n_strata = self.frame["stratum_id"].n_unique()
-                notes.append(f"{unvalidated.height} of {n_strata} sampled strata ({int(unvalidated['n_population'].sum())} "
-                             "tracks) have no validated track yet: the weighted estimates cover only the other strata.")
+                notes.append(f"{unvalidated.height} of {n_strata} sampled strata "
+                             f"({int(unvalidated['n_population'].sum())} tracks) have no validated track yet: "
+                             "the weighted estimates cover only the other strata.")
         if validated < self.frame.height and not validated_in_queue_order(self.frame):
             notes.append(f"Tracks were not validated in sampling order (sort '{_SORT_LABELS['queue']}'): until "
                          "every sampled track is validated, the estimates assume that the validated tracks are a "

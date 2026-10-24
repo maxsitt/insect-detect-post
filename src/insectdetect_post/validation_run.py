@@ -457,7 +457,7 @@ class ValidationRun:
         window_s: float = VALIDATION_SAME_INDIVIDUAL_WINDOW_S,
         overlap_s: float = VALIDATION_SAME_INDIVIDUAL_OVERLAP_S,
     ) -> dict[TrackKey, dict[TrackKey, float]]:
-        """Return the link candidates of each track in 'keys' among 'keys', earlier and later (rule of previous_tracks()).
+        """Return the earlier and later link candidates of each track in 'keys' among 'keys' (see previous_tracks()).
 
         Args:
             keys: Tracks to pair, e.g. the validation queue.
@@ -589,7 +589,8 @@ def _fractional_durations(tracks: pl.DataFrame) -> pl.DataFrame:
     Older runs truncated the duration to whole seconds, so their column is read as integers.
     A track whose times cannot be parsed keeps its whole-second duration.
     """
-    if not {"duration_s", "start_time", "end_time"} <= set(tracks.columns) or not tracks["duration_s"].dtype.is_integer():
+    if (not {"duration_s", "start_time", "end_time"} <= set(tracks.columns)
+            or not tracks["duration_s"].dtype.is_integer()):
         return tracks
     start, end = (pl.col(c).cast(pl.String).str.to_datetime(strict=False) for c in ("start_time", "end_time"))
     recomputed = (end - start).dt.total_seconds(fractional=True).round(2)

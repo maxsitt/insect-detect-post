@@ -1008,10 +1008,11 @@ class TrackListModel(QAbstractListModel):
             return f"{glyph}{quality}  {where}  ·  {row.get('pred') or '-'} ({prob})"
         if role == Qt.ItemDataRole.ToolTipRole:
             pred = "(hidden)" if self._blind and status.verdict is None else (row.get("pred") or "-")
+            verdict = VERDICT_LABELS.get(status.verdict, status.verdict) if status.verdict else "not validated"
             return (f"Device: {_device_label(row)} = {row['device_id']}\nSession: {row['session_id']}\n"
                     f"Track ID: {row['track_id']}\n"
                     f"Prediction: {pred}\n"
-                    f"Verdict: {VERDICT_LABELS.get(status.verdict, status.verdict) if status.verdict else 'not validated'}"
+                    f"Verdict: {verdict}"
                     + ("\nUncertain (inc.)" if status.uncertain else "")
                     + (f"\nIndividual: ID {status.individual} ({status.n_individual} tracks)"
                        if status.individual else "")

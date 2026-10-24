@@ -127,24 +127,24 @@ STATS_COLUMN_DESCRIPTIONS = {
     "n_shared": "Tracks both sessions validated independently, i.e. not pre-filled from the other session "
                 "(at a rank: both named a taxon there)",
     "share": "Share of the validated tracks: n_tracks / n_validated",
-    "share_weighted": "Share estimated for the tracks of the sampled strata: every stratum with validated tracks counts with "
-        "its population size",
+    "share_weighted": "Share estimated for the tracks of the sampled strata: "
+                      "every stratum with validated tracks counts with its population size",
     "share_validated": "n_validated / n_sampled",
     "share_agree": "n_agree / n_shared",
     "share_corrected": "Share of the tracks with the verdict corrected",
     "accuracy": "Share of the comparable tracks the model got right: n_agree / n_comparable",
     "accuracy_ci_low": "Lower end of the Wilson 95 % interval of the accuracy",
     "accuracy_ci_high": "Upper end of the Wilson 95 % interval of the accuracy",
-    "accuracy_weighted": "Accuracy estimated for the tracks of the sampled strata: every stratum with validated tracks counts with "
-        "its population size",
+    "accuracy_weighted": "Accuracy estimated for the tracks of the sampled strata: "
+                         "every stratum with validated tracks counts with its population size",
     "accuracy_weighted_ci_low": "Lower end of the 95 % interval of the weighted accuracy (empty at zero variance)",
     "accuracy_weighted_ci_high": "Upper end of the 95 % interval of the weighted accuracy (empty at zero variance)",
     "precision": "Share of the tracks predicted as this taxon that the validator confirmed: "
                  "n_correct / (n_correct + n_wrong); false positives are detection errors, counted separately",
     "precision_ci_low": "Lower end of the Wilson 95 % interval of the precision",
     "precision_ci_high": "Upper end of the Wilson 95 % interval of the precision",
-    "precision_weighted": "Precision estimated for the tracks of the sampled strata: every stratum with validated tracks counts with "
-        "its population size",
+    "precision_weighted": "Precision estimated for the tracks of the sampled strata: "
+                          "every stratum with validated tracks counts with its population size",
     "precision_weighted_ci_low": "Lower end of the 95 % interval of the weighted precision (empty at zero variance)",
     "precision_weighted_ci_high": "Upper end of the 95 % interval of the weighted precision (empty at zero variance)",
     "recall": "Share of the tracks the validator determined as this taxon that the model predicted as it: "
