@@ -336,11 +336,10 @@ _LINK_BTN_TOOLTIP = ("This track continues an earlier track of the same individu
                      "choose the track next to it")
 # 'Same individual' button with several tracks selected (see ValidationPage._batch_link_state())
 _LINK_BTN_BATCH_TOOLTIPS = {
-    "link": (f"Link the selected tracks in time order as one individual; tracks more than "
-             f"{VALIDATION_SAME_INDIVIDUAL_WINDOW_S:g} s apart are not linked"),
+    "link": (f"Link the selected tracks in time order as one individual; asks first if tracks are more than "
+             f"{VALIDATION_SAME_INDIVIDUAL_WINDOW_S:g} s apart"),
     "unlink": "Remove the links of the selected tracks",
-    "none": (f"No two selected tracks of the same device/session follow each other within "
-             f"{VALIDATION_SAME_INDIVIDUAL_WINDOW_S:g} s"),
+    "none": "No two selected tracks of the same device/session can be linked (false positives cannot)",
 }
 
 # Verdict panel: more children of a parent than this are offered by type-ahead only, not as a dropdown list
@@ -396,6 +395,9 @@ _GUIDELINES_DELAY_MS = 300
 
 # Batches larger than this ask for confirmation
 _BATCH_CONFIRM_THRESHOLD = 25
+
+# Batch link: links outside the candidate window listed in the confirmation
+_BATCH_LINK_LISTED = 10
 
 # Help: block margins (QTextDocument supports only a CSS subset), guidelines and shortcuts
 _HELP_CSS = """
@@ -488,7 +490,8 @@ earlier tracks in the <i>Same individual as</i> dropdown (<b>L</b> links the nea
 an <i>individual_id</i> in the export, their determinations are not copied. Tracks marked as <i>Not an
 arthropod</i> (false positive) cannot be linked. In chronological order, tracks that could be linked to the shown
 track are highlighted in blue: up to {VALIDATION_SAME_INDIVIDUAL_WINDOW_S:g} s apart from it, or overlapping it by
-up to {VALIDATION_SAME_INDIVIDUAL_OVERLAP_S:g} s.</td></tr>
+up to {VALIDATION_SAME_INDIVIDUAL_OVERLAP_S:g} s. To link tracks further apart, select them and press <b>L</b>
+(see <i>Batch</i> below).</td></tr>
 <tr><td><b>Multiple individuals (M)</b></td>
 <td>More than one arthropod. <i>In crops</i>: several individuals inside the single crops; <i>in track</i>:
 one individual per crop, but the crops of the track show different taxa (a tracking error). <i>Same taxon in
@@ -520,8 +523,9 @@ note. IDs match as a whole (<i>S1</i> does not find S12), and all terms must mat
 <li><b>Batch:</b> select several tracks in the list with Ctrl / Shift + click or all with Ctrl+A.
 The verdict, flag and tag buttons then apply to each of them - <i>Agree</i> confirms each track&rsquo;s own prediction.
 <i>Copy determination to selection</i> copies the shown track&rsquo;s determination to the others instead.
-Select tracks and press <b>L</b> to link them in time order as one individual, tracks more than
-{VALIDATION_SAME_INDIVIDUAL_WINDOW_S:g} s apart are not linked.</li>
+Select tracks and press <b>L</b> to link them in time order as one individual. If tracks are more than
+{VALIDATION_SAME_INDIVIDUAL_WINDOW_S:g} s apart or overlap by more than {VALIDATION_SAME_INDIVIDUAL_OVERLAP_S:g} s,
+you are asked whether to link all of them or only those within this window.</li>
 <li><b>Auto-advance</b>: jump to the next track right after a one-click verdict.</li>
 </ul>
 
@@ -2804,7 +2808,8 @@ class VerdictPanel(QWidget):
         Args:
             candidates: Earlier tracks to link (ValidationRun.previous_tracks() rows plus 'human').
             group: Tracks of the individual in time order, dicts with 'track_id', 'is_current',
-                'in_queue', 'human', 'start_time', 'end_time', 'warning' (false positive), 'note'.
+                'in_queue', 'human', 'start_time', 'end_time', 'warning' (false positive), 'note' and
+                'gap_s' (ValidationRun.link_gap() before the shown track, None for later tracks).
             order_hint: Show the hint that the list is not chronological.
         """
         self._link_candidates = list(candidates)
@@ -3190,15 +3195,15 @@ class VerdictPanel(QWidget):
         entries: list[tuple[str, str]] = []  # (label, track ID) of the linkable earlier tracks
         for cand in self._link_candidates:
             tid = str(cand["track_id"])
-            gap = cand["gap_s"]
-            label = f"ID {tid} · {abs(gap):.1f} s {'overlap' if gap < 0 else 'before'}"
+            label = f"ID {tid} · {_fmt_gap(cand['gap_s'])}"
             if not self._blind and cand.get("pred"):
                 label += f" · {cand['pred']}"
             entries.append((label, tid))
         shown = [tid for _label, tid in entries]
+        gaps = {str(m["track_id"]): m["gap_s"] for m in self._link_group if m.get("gap_s") is not None}
         for tid in links:
-            if tid not in shown:  # stored link outside the candidate window
-                entries.append((f"ID {tid} · linked", tid))
+            if tid not in shown:  # stored link outside the candidate window, e.g. from a batch link
+                entries.append((f"ID {tid} · {_fmt_gap(gaps[tid])}" if tid in gaps else f"ID {tid} · linked", tid))
                 shown.append(tid)
         later = [str(m["track_id"]) for m in self._link_group
                  if not m.get("is_current") and str(m["track_id"]) not in links]
@@ -4390,6 +4395,7 @@ class ValidationPage(QWidget):
                     "human": self._human_lineage(member), "start_time": row.get("start_time"),
                     "end_time": row.get("end_time"), "warning": "false positive" if false_positive else None,
                     "note": MULTIPLE_INDIVIDUALS_LABELS[DIFFERENT_TAXA_IN_TRACK].lower() if in_track else None,
+                    "gap_s": self.run.link_gap(member, key),
                 })
         return candidates, group
 
@@ -4962,13 +4968,14 @@ class ValidationPage(QWidget):
         """Link the selected tracks as one individual per device/session, or remove their links."""
         if self.session is None or self.run is None:
             return
-        if not self._confirm_batch(len(keys), "same individual"):
+        pairs = self._confirm_batch_link(keys) if link else []
+        if pairs is None or (not link and not self._confirm_batch(len(keys), "same individual")):
             self._sync_batch()  # the button shows the selection's state again
             return
         session = self.session
         links: dict[TrackKey, str | None] = {}
         if link:
-            for later, earlier in self._batch_link_pairs(keys):
+            for later, earlier in pairs:
                 if later not in links:
                     entry = session.verdict(later)
                     links[later] = entry.same_individual_as if entry is not None else None
@@ -4996,9 +5003,54 @@ class ValidationPage(QWidget):
         self._save_timer.start()
         self._show_message(f"{'Linked' if link else 'Unlinked'} {len(changed)} tracks")
 
+    def _confirm_batch_link(self, keys: list[TrackKey]) -> list[tuple[TrackKey, TrackKey]] | None:
+        """Return the '(later, earlier)' links of a batch to set (see _batch_link_pairs()), None if cancelled.
+
+        Links outside the window of the link candidates (see ValidationRun.is_link_candidate()) are only set after
+        asking: the dialog names them and offers to link all tracks or only those within the window. Without such
+        links, large batches are confirmed as for the other batch actions.
+        """
+        if self.run is None:
+            return None
+        run = self.run
+        pairs = self._batch_link_pairs(keys)
+        outside = [(later, earlier) for later, earlier in pairs if not run.is_link_candidate(earlier, later)]
+        if not outside:
+            return pairs if self._confirm_batch(len(keys), "same individual") else None
+        lines = []
+        for later, earlier in outside[:_BATCH_LINK_LISTED]:
+            gap = run.link_gap(earlier, later)
+            lines.append(f"ID {later[2]} → ID {earlier[2]}" + (f" ({_fmt_gap(gap)})" if gap is not None else ""))
+        if len(outside) > _BATCH_LINK_LISTED:
+            lines.append(f"... and {len(outside) - _BATCH_LINK_LISTED} more")
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Question)
+        msg.setWindowTitle("Same individual")
+        if len(outside) < len(pairs):
+            count = f"{len(outside)} of {len(pairs)} links are"
+        else:
+            count = "The link is" if len(pairs) == 1 else f"All {len(pairs)} links are"
+        msg.setText(
+            f"{count} outside the window of link candidates (more than "
+            f"{VALIDATION_SAME_INDIVIDUAL_WINDOW_S:g} s apart or overlapping by more than "
+            f"{VALIDATION_SAME_INDIVIDUAL_OVERLAP_S:g} s):\n\n" + "\n".join(lines)
+            + "\n\nLink tracks this far apart only if they clearly show the same individual."
+        )
+        all_btn = msg.addButton("Link all", QMessageBox.ButtonRole.AcceptRole)
+        within_btn = (msg.addButton("Only within the window", QMessageBox.ButtonRole.ActionRole)
+                      if len(outside) < len(pairs) else None)
+        msg.addButton(QMessageBox.StandardButton.Cancel)
+        msg.exec()
+        clicked = msg.clickedButton()
+        if clicked is all_btn:
+            return pairs
+        if within_btn is not None and clicked is within_btn:
+            return [pair for pair in pairs if pair not in outside]
+        return None
+
     def _batch_link_pairs(self, keys: list[TrackKey]) -> list[tuple[TrackKey, TrackKey]]:
         """Return the '(later, earlier)' links of a batch: consecutive selected tracks of a device/session in time
-        order that are link candidates of each other (see ValidationRun.is_link_candidate()).
+        order, whatever their gap (see _confirm_batch_link()).
 
         False positives are left out, so the chain bridges them.
         """
@@ -5012,7 +5064,7 @@ class ValidationPage(QWidget):
         pairs = []
         for members in groups.values():
             ordered = sort_tracks_chronologically(members, run.track_start_times)
-            pairs += [(later, earlier) for earlier, later in pairwise(ordered) if run.is_link_candidate(earlier, later)]
+            pairs += [(later, earlier) for earlier, later in pairwise(ordered)]
         return pairs
 
     def _batch_link_state(self) -> tuple[bool, bool, str] | None:
@@ -5787,6 +5839,19 @@ def _fmt_selection(sampling: dict[str, Any], full: bool = False) -> str:
     if rank and taxa:
         parts.append(f"{rank}: {listed(taxa)}")
     return "; ".join(parts) or "all tracks of the run"
+
+
+def _fmt_gap(gap_s: float) -> str:
+    """Return the gap of an earlier track, e.g. '8.4 s before', '3 min 5 s before', '2.0 s overlap'."""
+    seconds = round(abs(gap_s), 1)
+    if seconds < 60:
+        text = f"{seconds:.1f} s"
+    elif seconds < 3600:
+        text = f"{int(seconds // 60)} min {int(seconds % 60)} s"
+    else:
+        minutes = int(seconds // 60)
+        text = f"{minutes // 60} h {minutes % 60} min"
+    return f"{text} {'overlap' if gap_s < 0 else 'before'}"
 
 
 def _fmt_duration(low: float | None, high: float | None) -> str:

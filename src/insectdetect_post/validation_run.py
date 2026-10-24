@@ -438,18 +438,28 @@ class ValidationRun:
         overlap_s: float = VALIDATION_SAME_INDIVIDUAL_OVERLAP_S,
     ) -> bool:
         """Return whether 'earlier' is among the previous_tracks() of 'later' (same rule, one pair)."""
+        gap = self.link_gap(earlier, later)
+        return gap is not None and -overlap_s <= gap <= window_s
+
+    def link_gap(self, earlier: TrackKey, later: TrackKey) -> float | None:
+        """Return the gap (s, negative = overlap) of 'earlier' before 'later', also outside the candidate window.
+
+        The 'gap_s' of previous_tracks() (not rounded) without its limits, e.g. for a batch link of tracks further
+        apart. None if the tracks are of different devices/sessions, 'earlier' is not earlier (see
+        previous_tracks()) or a track or its times are missing.
+        """
         if earlier[:2] != later[:2] or earlier == later:
-            return False
+            return None
         rows = self.track_row(earlier), self.track_row(later)
         if rows[0] is None or rows[1] is None:
-            return False
+            return None
         o_start, o_end = _parse_ts(rows[0].get("start_time")), _parse_ts(rows[0].get("end_time"))
         start, end = _parse_ts(rows[1].get("start_time")), _parse_ts(rows[1].get("end_time"))
         if o_start is None or o_end is None or start is None or end is None:
-            return False
+            return None
         if (o_start, track_id_order(earlier[2])) >= (start, track_id_order(later[2])):
-            return False  # not earlier, see previous_tracks()
-        return _candidate_gap(start, end, o_end, window_s, overlap_s) is not None
+            return None  # not earlier, see previous_tracks()
+        return _gap(start, end, o_end)
 
     def link_partners(
         self,
@@ -628,19 +638,21 @@ def track_id_order(track_id: str) -> tuple[int, int | str]:
     return (0, int(track_id)) if track_id.isdigit() else (1, track_id)
 
 
+def _gap(start: datetime, end: datetime, o_end: datetime) -> float:
+    """Return the gap (s, negative = overlap) of an earlier-starting track ending at 'o_end' before the track from
+    'start' to 'end'."""
+    if o_end <= start:
+        return (start - o_end).total_seconds()
+    return -(min(end, o_end) - start).total_seconds()
+
+
 def _candidate_gap(start: datetime, end: datetime, o_end: datetime, window_s: float, overlap_s: float) -> float | None:
-    """Return the gap (s, negative = overlap) of an earlier-starting track ending at 'o_end' if it is a link candidate.
+    """Return the _gap() of an earlier-starting track ending at 'o_end' if it is a link candidate.
 
     None if it overlaps the track starting at 'start' by more than 'overlap_s' or ended more than 'window_s' before.
     """
-    if o_end <= start:
-        gap = (start - o_end).total_seconds()
-    else:
-        overlap = (min(end, o_end) - start).total_seconds()
-        if overlap > overlap_s:
-            return None
-        gap = -overlap
-    return gap if gap <= window_s else None
+    gap = _gap(start, end, o_end)
+    return gap if -overlap_s <= gap <= window_s else None
 
 
 def _parse_ts(value: Any) -> datetime | None:
