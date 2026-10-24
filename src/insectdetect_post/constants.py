@@ -141,6 +141,9 @@ VALIDATION_SMALL_SAMPLE_TRACKS = 30
 VALIDATION_SAME_INDIVIDUAL_WINDOW_S = 10.0
 VALIDATION_SAME_INDIVIDUAL_OVERLAP_S = 3.0
 
+# Validation: maximum length in characters of a tag
+VALIDATION_TAG_MAX_CHARS = 40
+
 # Validation: maximum length in characters of the per-track notes (one line)
 VALIDATION_NOTES_MAX_CHARS = 100
 
@@ -181,10 +184,11 @@ COLOR_VERDICT = {
     "not_assessable": "#8D6E63",
 }
 
-# GUI styling: colors of the validation flags (low image quality, multiple / same individual)
+# GUI styling: colors of the validation flags (low image quality, multiple / same individual) and tags
 COLOR_FLAG_LOW_QUALITY = "#9575CD"
 COLOR_FLAG_MULTIPLE_INDIVIDUALS = "#26A69A"
 COLOR_FLAG_SAME_INDIVIDUAL = "#4F9DDE"
+COLOR_FLAG_TAG = "#C2668F"
 
 # GUI styling: validation error text on dark / light themes
 COLOR_ERROR_TEXT_DARK = "#EF9A9A"

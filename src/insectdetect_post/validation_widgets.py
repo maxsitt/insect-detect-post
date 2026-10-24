@@ -11,7 +11,7 @@ Classes:
     CropGridModel: List model over the crops of one track (lazy thumbnails).
     CropGridView: Icon-mode list view with zoom.
     SingleImageView: One crop at integer magnification with a caption.
-    RowStatus: State of one track row (verdict, flags, links).
+    RowStatus: State of one track row (verdict, flags, links, tags, notes).
     TrackListModel: List model over the validation queue with filters, search and sorting.
     TaxonCombo: Editable combo box with a type-ahead completer for one rank.
 
@@ -756,6 +756,8 @@ class RowStatus(NamedTuple):
         link_candidate: An earlier or later track of the queue could be linked (neither a false positive).
         prefilled_from: Stem of the session the track's entry was pre-filled from, or None.
         prefill_edited: The pre-filled entry was changed since.
+        tags: Tags of the track.
+        notes: Notes of the track.
     """
     verdict: str | None = None
     low_quality: bool = False
@@ -768,6 +770,8 @@ class RowStatus(NamedTuple):
     link_candidate: bool = False
     prefilled_from: str | None = None
     prefill_edited: bool = False
+    tags: tuple[str, ...] = ()
+    notes: str = ""
 
 
 def parse_search(query: str) -> list[tuple[str | None, str]]:
@@ -791,11 +795,12 @@ def parse_search(query: str) -> list[tuple[str | None, str]]:
 
 
 def matches_search(row: dict[str, Any], terms: list[tuple[str | None, str]], individual: str = "",
-                   pred: str = "") -> bool:
+                   pred: str = "", remarks: str = "") -> bool:
     """Return whether a track matches every search term.
 
     Numbers match whole ids: without a field the track, session and individual id (not the device).
-    Words match the prediction and the device id. 'pred' is empty where it must stay hidden.
+    Words match the prediction, the device id and 'remarks' (tags and notes). 'pred' is empty where it must
+    stay hidden.
     """
     device_no = str(row.get("device_no") or "")
     device_id = str(row["device_id"]).casefold()
@@ -803,6 +808,7 @@ def matches_search(row: dict[str, Any], terms: list[tuple[str | None, str]], ind
     track_id = str(row["track_id"]).casefold()
     link = individual.casefold()
     prediction = pred.casefold()
+    remarks = remarks.casefold()
     for field, value in terms:
         if field == "device":
             ok = value == device_no or value in device_id
@@ -813,7 +819,7 @@ def matches_search(row: dict[str, Any], terms: list[tuple[str | None, str]], ind
         elif value.isdigit():
             ok = value in (track_id, session_id, link)
         else:
-            ok = value in prediction or value in device_id
+            ok = value in prediction or value in device_id or value in remarks
         if not ok:
             return False
     return True
@@ -832,7 +838,7 @@ class TrackListModel(QAbstractListModel):
 
     KeyRole = Qt.ItemDataRole.UserRole + 1
     FILTERS = ("all", "todo", "link_candidates", "prefilled", "done", "agree", "corrected", "indeterminate",
-               "uncertain", "false_positive", "linked", "multiple", "low_quality")
+               "uncertain", "false_positive", "linked", "multiple", "low_quality", "tagged")
     # Sort mode -> (row field, descending); ties see _tie_break()
     NUMERIC_SORTS: ClassVar[dict[str, tuple[str, bool]]] = {
         "prob_desc": ("prob", True),
@@ -921,10 +927,13 @@ class TrackListModel(QAbstractListModel):
             return False
         if mode == "prefilled" and not status.prefilled_from:
             return False
+        if mode == "tagged" and not status.tags:
+            return False
         if self._terms:
             # Blind: the hidden prediction is not searchable
             pred = "" if self._blind and status.verdict is None else (row.get("pred") or "")
-            return matches_search(row, self._terms, status.individual or "", pred)
+            return matches_search(row, self._terms, status.individual or "", pred,
+                                  " ".join([*status.tags, status.notes]))
         return True
 
     def _tie_break(self, row: dict[str, Any]) -> tuple:
@@ -1011,6 +1020,8 @@ class TrackListModel(QAbstractListModel):
                     + (f"\nMultiple individuals: {MULTIPLE_INDIVIDUALS_LABELS.get(status.multiple, status.multiple)}"
                        if status.multiple else "")
                     + ("\nLow image quality" if status.low_quality else "")
+                    + (f"\nTags: {', '.join(status.tags)}" if status.tags else "")
+                    + (f"\nNotes: {status.notes}" if status.notes else "")
                     + (f"\nPre-filled from {status.prefilled_from}{' (edited)' if status.prefill_edited else ''}"
                        if status.prefilled_from else "")
                     + (f"\n\n{candidate_tip}" if candidate_tip else ""))

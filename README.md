@@ -492,7 +492,7 @@ the same validator or as agreement between validators.
   `Use these settings` and add only a taxa filter, at the rank of the strata. With the same strata and
   seed, every part samples exactly the tracks the whole design would have sampled for its taxa.
 - **Pre-filling a new session** - pick sessions in `Pre-fill new session from:` above `Start new validation
-  session` to start with your verdicts, notes, flags and links of those sessions (the latest wins)
+  session` to start with your verdicts, links, flags, tags and notes of those sessions (the latest wins)
   on the tracks the new session samples. The sample itself stays the same, and a blind session can only
   be pre-filled from blind sessions. For example, link the individuals of a whole run in one session,
   then start subsamples with the links in place, or take a larger subsample with the same strata and
@@ -504,7 +504,7 @@ the same validator or as agreement between validators.
   verdict of the highest one (*priority*, move a session up to let it win, e.g. an expert's session
   over an overview session), or the deepest taxon all its sessions agree on (*lowest common ancestor*,
   a track marked *not an arthropod* in one session and determined in another becomes not determinable).
-  Flags, notes and links always come from the highest session. Sessions of a run processed again are refused.
+  Links, flags, tags and notes always come from the highest session. Sessions of a run processed again are refused.
   With one session selected, the button writes the same file as on the validation page.
 
 ``` text

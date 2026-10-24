@@ -15,7 +15,7 @@ Classes:
     SetupPage: First page: pick the run and validator, select and subsample the tracks, start a session.
     MultiExportDialog: Order of several sessions and conflict rule for their validated CSV.
     TrackInfoPanel: Header above the crops: the current track's metadata, prediction and candidate taxa.
-    VerdictPanel: Form for the verdict on the current track: one-click actions, flags, taxon per rank, notes.
+    VerdictPanel: Form for the verdict on the current track: one-click actions, flags, taxon per rank, tags, notes.
     ValidationPage: Second page, where tracks are validated: track list, crops, info and verdict panel.
     StatsDialog: Dialog with the session's verdicts, model agreement and accuracy, with CSV export.
     ValidationWindow: Standalone or opened from the processing GUI; switches between both pages.
@@ -43,6 +43,7 @@ from PySide6.QtCore import (
     QItemSelectionModel,
     QModelIndex,
     QObject,
+    QPoint,
     QSettings,
     QSize,
     QStringListModel,
@@ -81,12 +82,14 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListView,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -128,6 +131,7 @@ from insectdetect_post.constants import (
     COLOR_FLAG_LOW_QUALITY,
     COLOR_FLAG_MULTIPLE_INDIVIDUALS,
     COLOR_FLAG_SAME_INDIVIDUAL,
+    COLOR_FLAG_TAG,
     COLOR_GROUP_CLASSIFICATION,
     COLOR_GROUP_METADATA,
     COLOR_GROUP_PROCESSING,
@@ -147,6 +151,7 @@ from insectdetect_post.constants import (
     VALIDATION_SAME_INDIVIDUAL_WINDOW_S,
     VALIDATION_SEED_DEFAULT,
     VALIDATION_SMALL_SAMPLE_TRACKS,
+    VALIDATION_TAG_MAX_CHARS,
 )
 from insectdetect_post.exceptions import RunSearchCancelled, ValidationRunError
 from insectdetect_post.gui_utils import (
@@ -208,6 +213,7 @@ from insectdetect_post.validation_session import (
     derive_verdict,
     has_qualifier,
     join_links,
+    normalize_tag,
     parse_links,
     qualifier_mark,
     session_files,
@@ -215,6 +221,7 @@ from insectdetect_post.validation_session import (
     source_csv_changed,
     with_link,
     with_qualifier,
+    with_tag,
 )
 from insectdetect_post.validation_stats import (
     agreement_by_rank,
@@ -276,6 +283,7 @@ _SETTINGS_KEY_AUTO_ADVANCE = "validation/auto_advance"
 _SETTINGS_KEY_PLAYBACK_MS = "validation/playback_ms"
 _SETTINGS_KEY_COMPARE = "validation/compare_strip"
 _SETTINGS_KEY_SORT = "validation/list_sort"
+_SETTINGS_KEY_TAGS = "validation/tags"  # tag list of the last opened session, ';'-separated in shortcut order
 
 # Window title on the setup page (an open session shows its run, validator and ID instead)
 _WINDOW_TITLE = "Insect Detect Post-Processing - Validation"
@@ -306,6 +314,13 @@ _FLAG_BTN_STYLE = "QPushButton { font-weight: bold; padding: 3px 6px; }"
 # Verdict panel: style of the recent-identification chips
 _CHIP_STYLE = "QToolButton { border: 1px solid palette(mid); border-radius: 8px; padding: 3px 8px; }"
 
+# Verdict panel: style of the tag chips (filled while the shown track carries the tag)
+_TAG_CHIP_STYLE = (_CHIP_STYLE + f"QToolButton:checked {{ background-color: {COLOR_FLAG_TAG}; "
+                   f"border-color: {COLOR_FLAG_TAG}; color: #F5F5F5; }}")
+
+# Verdict panel: tags with a shortcut (Alt+1 ... Alt+9, in tag list order)
+_TAG_SHORTCUTS = 9
+
 # Verdict panel: labels of the flag reasons and of the sex buttons
 _IMAGE_QUALITY_REASON_LABELS = {
     "blurry": "Blurry", "too_small": "Too small", "partially_visible": "Partially visible",
@@ -335,10 +350,11 @@ _FILTER_LABELS = {
     "all": "All", "todo": "To do", "link_candidates": "Link candidates", "prefilled": "Pre-filled",
     "done": "Validated", "agree": "Agreed", "corrected": "Corrected", "indeterminate": "indet. / partial",
     "uncertain": "Uncertain (inc.)", "false_positive": "False positive", "linked": "Same individual",
-    "multiple": "Multiple individuals", "low_quality": "Low quality",
+    "multiple": "Multiple individuals", "low_quality": "Low quality", "tagged": "Tagged",
 }
 _FILTER_TOOLTIPS = {
-    "prefilled": "Tracks whose verdict, notes, flags or links were pre-filled from an earlier session",
+    "tagged": "Tracks with at least one tag; search a tag to find its tracks",
+    "prefilled": "Tracks whose verdict, links, flags, tags or notes were pre-filled from an earlier session",
     "link_candidates": (f"Tracks with another track up to {VALIDATION_SAME_INDIVIDUAL_WINDOW_S:g} s before or after "
                         "them - potentially the same individual"),
 }
@@ -412,7 +428,7 @@ The weighted probability is the mean probability, lowered when only some of the 
 list the alternatives. Click a crop to show its own prediction at the bottom, double-click it for single view.
 <i>Compare with similar tracks</i> shows one crop of each related track, including the same linked individual,
 earlier tracks that could be linked, and tracks with the same prediction.</li>
-<li><b>Right: your verdict</b> - quick verdicts, the determination per rank, qualifiers, flags and notes.</li>
+<li><b>Right: your verdict</b> - quick verdicts, the determination per rank, qualifiers, flags, tags and notes.</li>
 <li><b>Top:</b> progress, <i>Statistics</i>, <i>Export validated CSV</i>, this help and <i>Back to setup</i>.</li>
 </ul>
 
@@ -447,8 +463,8 @@ name. <i>Recent</i> applies a determination you used before with one click.</td>
 <tr><td><b>Not determinable (U)</b></td>
 <td>An arthropod, but no rank can be determined. Press again to take it back.</td></tr>
 <tr><td><b>Reset (R)</b></td>
-<td>Discard everything recorded for the track - verdict, determination, qualifiers, flags, links and notes - and
-start again from the prediction.</td></tr>
+<td>Discard everything recorded for the track - verdict, determination, qualifiers, links, flags, tags and
+notes - and start again from the prediction.</td></tr>
 </table>
 
 <h3>Qualifiers and flags</h3>
@@ -480,6 +496,13 @@ crops</i>: determine as usual. <i>Different taxa in crops</i> or <i>in track</i>
 <tr><td><b>Low image quality (Q)</b></td>
 <td>Blurry, too small, partially visible or occluded (choose the reason next to it). Determine what you can see,
 but such tracks are left out of the accuracy statistics.</td></tr>
+<tr><td><b>Tags (Alt+1 - {_TAG_SHORTCUTS})</b></td>
+<td>Your own labels for what you mark often, e.g. &ldquo;on flower&rdquo;.
+<b>+</b> adds a tag (at most {VALIDATION_TAG_MAX_CHARS} characters) to the list, a click on a tag sets or removes
+it on the track, <b>Alt+1</b> to <b>Alt+{_TAG_SHORTCUTS}</b> toggle the first {_TAG_SHORTCUTS} tags. Right-click a
+tag to move it (this changes its number) or to delete it. The tags belong to the session: a new session of the run
+starts with the tags of its last session, so everyone validating it uses the same ones. Tracks marked as <i>Not an
+arthropod</i> keep their tags.</td></tr>
 <tr><td><b>Notes</b></td>
 <td>One short line (at most {VALIDATION_NOTES_MAX_CHARS} characters) for what the fields do not cover,
 e.g. &ldquo;mating pair&rdquo; or &ldquo;pollen on the legs&rdquo;.</td></tr>
@@ -491,10 +514,10 @@ e.g. &ldquo;mating pair&rdquo; or &ldquo;pollen on the legs&rdquo;.</td></tr>
 taxon, probability or camera setting. The default chronological order keeps neighboring tracks of a device
 together, which helps to spot the same individual. <i>Link candidates</i> shows only tracks that could be
 linked to another track.</li>
-<li><b>Search</b> for what a row shows: <i>ID 140</i>, <i>S3</i>, <i>D1</i> or part of a taxon name. IDs match
-as a whole (<i>S1</i> does not find S12), and all terms must match (<i>D1 S3</i>).</li>
+<li><b>Search</b> for what a row shows: <i>ID 140</i>, <i>S3</i>, <i>D1</i> or part of a taxon name, a tag or a
+note. IDs match as a whole (<i>S1</i> does not find S12), and all terms must match (<i>D1 S3</i>).</li>
 <li><b>Batch:</b> select several tracks in the list with Ctrl / Shift + click or all with Ctrl+A.
-The verdict and flag buttons then apply to each of them - <i>Agree</i> confirms each track&rsquo;s own prediction.
+The verdict, flag and tag buttons then apply to each of them - <i>Agree</i> confirms each track&rsquo;s own prediction.
 <i>Copy determination to selection</i> copies the shown track&rsquo;s determination to the others instead.
 Select tracks and press <b>L</b> to link them in time order as one individual, tracks more than
 {VALIDATION_SAME_INDIVIDUAL_WINDOW_S:g} s apart are not linked.</li>
@@ -508,7 +531,7 @@ writes one CSV with every track of the run, your verdicts and determinations, an
 further analysis: your determination for a validated track, otherwise the model prediction.</p>
 """
 
-_SHORTCUTS_HTML = """
+_SHORTCUTS_HTML = f"""
 <h2>Keyboard shortcuts</h2>
 <p><b>PgDown</b> and <b>PgUp</b> move between tracks, <b>Enter</b> jumps to the next unvalidated one. The arrow
 keys stay inside the current track: they move between its crops.</p>
@@ -532,6 +555,7 @@ keys stay inside the current track: they move between its crops.</p>
 <tr><td><b>I</b> / <b>G</b></td><td>Toggle uncertain (inc.) / aggregate (agg.)</td></tr>
 <tr><td><b>L</b></td><td>Link to the nearest earlier track (again: clear the links)</td></tr>
 <tr><td><b>M</b> / <b>Q</b></td><td>Toggle multiple individuals / low image quality</td></tr>
+<tr><td><b>Alt+1 - {_TAG_SHORTCUTS}</b></td><td>Toggle the first {_TAG_SHORTCUTS} tags</td></tr>
 <tr><td><b>R</b></td><td>Reset the track to the model prediction</td></tr>
 <tr><td><b>Esc</b> in a taxon field</td><td>Undo the typing</td></tr>
 <tr><td><b>Ctrl+S</b></td><td>Save now (saving is automatic as well)</td></tr>
@@ -939,9 +963,9 @@ class SetupPage(QWidget):
         self.prefill_widget = QWidget()
         prefill_row = QHBoxLayout(self.prefill_widget)
         prefill_row.setContentsMargins(6, 0, 6, 0)
-        prefill_tooltip = ("Start the new session with your verdicts, notes, flags and links of the "
-                           "selected earlier sessions on the tracks it samples. A blind session can "
-                           "only be pre-filled from blind sessions.")
+        prefill_tooltip = ("Start the new session with your verdicts, links, flags, tags and "
+                           "notes of the selected earlier sessions on the tracks it samples. "
+                           "A blind session can only be pre-filled from blind sessions.")
         prefill_title = QLabel("Pre-fill new session from:")
         prefill_title.setToolTip(prefill_tooltip)
         prefill_row.addWidget(prefill_title)
@@ -1767,7 +1791,14 @@ class SetupPage(QWidget):
         n_validated, n_pending = prefill_counts(self._prefill_selection[1], self._preview_keys)
         self.prefill_count_label.setText(
             f"Pre-fills {n_validated} of the {len(self._preview_keys)} sampled tracks with a verdict"
-            + (f" and {n_pending} with notes, flags or links only" if n_pending else "") + ".")
+            + (f" and {n_pending} with links, flags, tags or notes only" if n_pending else "") + ".")
+
+    def _starting_tags(self) -> list[str]:
+        """Return the tag list of a new session: the run's last updated session's, else the last one used."""
+        if self.run is not None and (sessions := ValidationSession.list_sessions(self.run.root)):
+            return list(sessions[0]["tags"])
+        stored = str(_settings().value(_SETTINGS_KEY_TAGS, "") or "")
+        return [tag for tag in stored.split(";") if tag]
 
     def _start_new(self) -> None:
         """Create, save and open a new session with the current settings."""
@@ -1786,7 +1817,7 @@ class SetupPage(QWidget):
             return
         # Every session gets its own id and files
         session = ValidationSession.create(self.run, validator, sampled, cfg, self.taxonomy,
-                                           blind=bool(self.blind_param.value()))
+                                           blind=bool(self.blind_param.value()), tags=self._starting_tags())
         if sources := self._prefill_sessions():
             prefill_session(session, sources, self.run)
             for entry in session.meta["custom_taxa"]:
@@ -2277,7 +2308,7 @@ class _ChipRow(_HScrollRow):
 
 
 class VerdictPanel(QWidget):
-    """Form for the validator's verdict on the current track: one-click actions, flags, taxon per rank, notes.
+    """Form for the validator's verdict on the current track: one-click actions, flags, taxon per rank, tags, notes.
 
     Signals:
         verdict_changed(object): The edited 'Verdict' after a user action.
@@ -2287,10 +2318,16 @@ class VerdictPanel(QWidget):
         batch_action(str, object): A one-click action for the selected tracks.
         apply_to_selection_requested(): 'Copy determination to selection' was pressed.
         notes_changed(str): The notes text after a keystroke.
+        tag_added(str): A new tag entered with the '+' chip.
+        tag_moved(str, int): '(tag, index)' to move the tag to in the tag list.
+        tag_removal_requested(str): 'Delete' was chosen for a tag.
         jump_requested(str): Track ID of the same device and session to show.
     """
     verdict_changed = Signal(object)
     notes_changed = Signal(str)
+    tag_added = Signal(str)
+    tag_moved = Signal(str, int)
+    tag_removal_requested = Signal(str)
     reset_requested = Signal()
     action_done = Signal()
     custom_taxon_added = Signal(str, object)
@@ -2317,13 +2354,14 @@ class VerdictPanel(QWidget):
         self._syncing_links = False  # filling the link combo, not an edit
         self._link_order_hint = False  # list not in chronological order
         self._recent: list[Lineage] = []
+        self._tags: list[str] = []  # tag list of the session, see set_tags()
         self._prefill_note = ""  # where the shown track's entry was pre-filled from, see set_prefill_note()
         self._batch_counts = (0, 0)
         self._batch_link: tuple[bool, bool, str] | None = None  # link button for a selection, see set_batch_link()
         self._create_ui()
 
     def _create_ui(self) -> None:
-        """Build the panel top to bottom: quick verdicts, determination, flags, status, notes and batch banner."""
+        """Build the panel top to bottom: quick verdicts, determination, flags, tags, notes, status and batch banner."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 10)
         layout.setSpacing(6)
@@ -2505,6 +2543,16 @@ class VerdictPanel(QWidget):
         layout.addLayout(flags)
         layout.addSpacing(_SECTION_GAP)
 
+        # Tags: one chip per tag of the session, filled while the shown track carries it
+        tags_label = QLabel("Tags:")
+        tags_label.setToolTip(f"Your own labels for what tracks have in common; Alt+1 ... Alt+{_TAG_SHORTCUTS} "
+                              f"toggle the first {_TAG_SHORTCUTS} tags; right-click a tag to move or delete it")
+        layout.addWidget(tags_label)
+        self.tag_row = _ChipRow(probe.sizeHint().height())
+        self.tag_chips: dict[str, QToolButton] = {}
+        layout.addWidget(self.tag_row)
+        self._render_tags()
+
         # Notes: one line with a length limit
         layout.addWidget(QLabel("Notes:"))
         self.notes_edit = QLineEdit()
@@ -2566,6 +2614,11 @@ class VerdictPanel(QWidget):
         """Whether the model prediction is hidden (blind, not yet determined)."""
         return self._blind and not self._verdict.validated
 
+    def set_tags(self, tags: list[str]) -> None:
+        """Show the session's tag list as chips, in shortcut order."""
+        self._tags = list(tags)
+        self._render_tags()
+
     def set_batch_count(self, count: int, copy_targets: int = 0) -> None:
         """Update the batch banner.
 
@@ -2609,13 +2662,14 @@ class VerdictPanel(QWidget):
         else:
             self._verdict = Verdict(val=self._model_prefill(), val_source="model")
         if pending is not None:
-            # Keep pending notes, flags and attributes
+            # Keep pending links, flags, tags, notes and attributes
             self._verdict.notes = pending.notes
             self._verdict.image_quality, self._verdict.image_quality_reason = (
                 pending.image_quality, pending.image_quality_reason)
             self._verdict.multiple_individuals = pending.multiple_individuals
             self._verdict.same_individual_as = pending.same_individual_as
             self._verdict.qualifier, self._verdict.sex = pending.qualifier, pending.sex
+            self._verdict.tags = pending.tags
         for rank in VALIDATION_RANKS:
             chip = self.chip_buttons[rank]
             if chip.isVisibleTo(self) != (rank_index(rank) < rank_index(model_rank)):
@@ -2660,8 +2714,8 @@ class VerdictPanel(QWidget):
     def batch_verdict(self, action: str, payload: Any, model: Lineage, existing: Verdict | None) -> Verdict | None:
         """Return the verdict a one-click action produces for another selected track, None to leave it unchanged.
 
-        A flag on a track without a determination stays pending. Withdrawing 'Not an arthropod' or 'Not determinable'
-        only affects tracks with that verdict.
+        A flag or tag on a track without a determination stays pending. Withdrawing 'Not an arthropod' or
+        'Not determinable' only affects tracks with that verdict.
         """
         fresh = existing is None or not existing.validated
         if action in ("false_positive", "indet") and not payload["checked"]:
@@ -2681,12 +2735,13 @@ class VerdictPanel(QWidget):
         else:
             base = Verdict(val=self._fresh_val(model))
             if existing is not None:
-                # Keep pending notes, flags and attributes
+                # Keep pending links, flags, tags, notes and attributes
                 base.notes = existing.notes
                 base.image_quality, base.image_quality_reason = existing.image_quality, existing.image_quality_reason
                 base.multiple_individuals = existing.multiple_individuals
                 base.same_individual_as = existing.same_individual_as
                 base.qualifier, base.sex = existing.qualifier, existing.sex
+                base.tags = existing.tags
         base.validated = True
         if action == "agree_down_to":
             base.val = {r: ((model.get(r) or INDET_LABEL) if rank_index(r) <= rank_index(payload) else INDET_LABEL)
@@ -2697,14 +2752,16 @@ class VerdictPanel(QWidget):
             base.false_positive, base.val_source = False, "taxonomy_list"
         elif action == "false_positive":
             base.false_positive = True
-        elif action in ("low_quality", "multiple_individuals"):
+        elif action in ("low_quality", "multiple_individuals", "tag"):
             if action == "low_quality":
                 base.image_quality = "low" if payload["checked"] else "ok"
                 base.image_quality_reason = payload["reason"] if payload["checked"] else None
-            else:
+            elif action == "multiple_individuals":
                 base.multiple_individuals = payload["kind"] if payload["checked"] else None
+            else:
+                base.tags = with_tag(base.tags, payload["tag"], payload["checked"])
             if fresh:
-                base.validated = False  # a flag alone stays pending
+                base.validated = False  # a flag or tag alone stays pending
         elif action == "apply_determination":
             # Only the determination is copied
             current: Verdict = payload
@@ -2797,6 +2854,11 @@ class VerdictPanel(QWidget):
         if self.multiple_btn.isEnabled():
             self.multiple_btn.toggle()
 
+    def toggle_tag(self, index: int) -> None:
+        """Toggle the tag at 'index' of the tag list (shortcut)."""
+        if 0 <= index < len(self._tags):
+            self.tag_chips[self._tags[index]].toggle()
+
     def set_all_indet(self) -> None:
         """Mark every rank as indet. (nothing determinable)."""
         self._verdict.val = dict.fromkeys(VALIDATION_RANKS, INDET_LABEL)
@@ -2868,14 +2930,11 @@ class VerdictPanel(QWidget):
         """Return whether the verdict is 'not determinable'."""
         return self._verdict.validated and not self._verdict.false_positive and not self._verdict.determinate_ranks()
 
-    def _has_pending_content(self) -> bool:
-        """Return whether pending content was recorded (see ValidationSession.set_pending())."""
-        verdict = self._verdict
-        return bool(verdict.notes.strip() or verdict.image_quality == "low" or verdict.multiple_individuals
-                    or verdict.same_individual_as or verdict.qualifier or verdict.sex)
-
     def _withdraw_verdict(self) -> None:
-        """Withdraw the verdict of the shown track (to do again). Pending notes, flags and attributes are kept."""
+        """Withdraw the verdict of the shown track (to do again).
+
+        Pending links, flags, tags, notes and attributes are kept.
+        """
         self._verdict.false_positive = False
         self._verdict.val = self._fresh_val(self._model)
         self._verdict.val_source = "taxonomy_list" if self._blind else "model"
@@ -2927,6 +2986,8 @@ class VerdictPanel(QWidget):
         self.multiple_type.setCurrentIndex(max(idx, 0))
         self._render_links()
         self._render_recent(self._recent)
+        for tag, chip in self.tag_chips.items():
+            chip.setChecked(tag in verdict.tags)
 
         taxa_enabled = not verdict.false_positive
         has_taxon = bool(verdict.determinate_ranks())
@@ -3053,6 +3114,34 @@ class VerdictPanel(QWidget):
             btn.setStyleSheet(_CHIP_STYLE)
             btn.clicked.connect(lambda _=False, lin=dict(lineage): self.apply_lineage(lin))
             self.recent_row.add_widget(btn)
+
+    def _render_tags(self) -> None:
+        """Show a chip per tag of the session (checked if the shown track carries it), then the '+' chip."""
+        self.tag_row.clear()
+        self.tag_chips = {}
+        for i, tag in enumerate(self._tags, start=1):
+            chip = QToolButton()
+            chip.setText(tag)
+            chip.setCheckable(True)
+            chip.setChecked(tag in self._verdict.tags)
+            chip.setToolTip((f"Alt+{i} · " if i <= _TAG_SHORTCUTS else "") + "right-click to move or delete")
+            chip.setAutoRaise(True)
+            chip.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            chip.setStyleSheet(_TAG_CHIP_STYLE)
+            chip.toggled.connect(lambda checked, t=tag: self._on_tag_toggled(t, checked))
+            chip.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            chip.customContextMenuRequested.connect(
+                lambda pos, t=tag, c=chip: self._show_tag_menu(t, c.mapToGlobal(pos)))
+            self.tag_row.add_widget(chip)
+            self.tag_chips[tag] = chip
+        add_chip = QToolButton()
+        add_chip.setText("+")
+        add_chip.setToolTip("Add a tag to the list; click it to set it on a track")
+        add_chip.setAutoRaise(True)
+        add_chip.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        add_chip.setStyleSheet(_CHIP_STYLE)
+        add_chip.clicked.connect(self._ask_new_tag)
+        self.tag_row.add_widget(add_chip)
 
     def _link_allowed(self) -> bool:
         """Return whether the track can be linked (not a false positive)."""
@@ -3339,6 +3428,46 @@ class VerdictPanel(QWidget):
         self._verdict.multiple_individuals = kind
         self._commit(validate=self._verdict.validated)
         self.batch_action.emit("multiple_individuals", {"checked": True, "kind": kind})
+
+    def _on_tag_toggled(self, tag: str, checked: bool) -> None:
+        """Set or remove a tag on the shown track (also for the batch)."""
+        if self._loading:
+            return
+        # A tag leaves the determination alone: keep what is being typed in a taxon field (not committed yet)
+        focus = QApplication.focusWidget()
+        typing = next((edit for combo in self.combos.values()
+                       if (edit := combo.lineEdit()) is not None and focus in (combo, edit)), None)
+        typed = typing.text() if typing is not None else ""
+        self._verdict.tags = with_tag(self._verdict.tags, tag, checked)
+        self._commit(validate=self._verdict.validated)
+        if typing is not None and typing.text() != typed:
+            typing.setText(typed)
+        self.batch_action.emit("tag", {"tag": tag, "checked": checked})
+
+    def _show_tag_menu(self, tag: str, pos: QPoint) -> None:
+        """Offer to move a tag in the tag list (shortcut order) or to delete it."""
+        index = self._tags.index(tag)
+        last = len(self._tags) - 1
+        menu = QMenu(self)
+        for text, target, enabled in (("Move to front", 0, index > 0), ("Move left", index - 1, index > 0),
+                                      ("Move right", index + 1, index < last), ("Move to end", last, index < last)):
+            action = menu.addAction(text)
+            action.setEnabled(enabled)
+            action.triggered.connect(lambda _=False, i=target: self.tag_moved.emit(tag, i))
+        menu.addSeparator()
+        menu.addAction("Delete tag ...").triggered.connect(lambda: self.tag_removal_requested.emit(tag))
+        menu.exec(pos)
+
+    def _ask_new_tag(self) -> None:
+        """Ask for a new tag (see tag_added)."""
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle("New tag")
+        dialog.setLabelText(f"New tag (at most {VALIDATION_TAG_MAX_CHARS} characters):")
+        dialog.setTextValue("")
+        if (edit := dialog.findChild(QLineEdit)) is not None:
+            edit.setMaxLength(VALIDATION_TAG_MAX_CHARS)
+        if dialog.exec() and (tag := normalize_tag(dialog.textValue())):
+            self.tag_added.emit(tag)
 
     def _on_notes_edited(self, _text: str = "") -> None:
         """Store the typed note and show it in the tooltip."""
@@ -3655,6 +3784,9 @@ class ValidationPage(QWidget):
         self.verdict_panel = VerdictPanel()
         self.verdict_panel.verdict_changed.connect(self._on_verdict_changed)
         self.verdict_panel.notes_changed.connect(self._on_notes_changed)
+        self.verdict_panel.tag_added.connect(self._on_tag_added)
+        self.verdict_panel.tag_moved.connect(self._on_tag_moved)
+        self.verdict_panel.tag_removal_requested.connect(self._on_tag_removal)
         self.verdict_panel.reset_requested.connect(self._reset_current)
         self.verdict_panel.action_done.connect(self._after_one_click)
         self.verdict_panel.custom_taxon_added.connect(self._on_custom_taxon)
@@ -3731,6 +3863,8 @@ class ValidationPage(QWidget):
         shortcut("Space", self.toggle_playback)
         for i, rank in enumerate(VALIDATION_RANKS[:-1], start=1):
             shortcut(str(i), lambda r=rank: self.verdict_panel.agree_down_to(r))
+        for i in range(1, _TAG_SHORTCUTS + 1):
+            shortcut(f"Alt+{i}", lambda n=i - 1: self.verdict_panel.toggle_tag(n))
         shortcut("PgDown", lambda: self._step(1))
         shortcut("PgUp", lambda: self._step(-1))
         shortcut("Ctrl+Right", lambda: self._step(1))
@@ -3761,6 +3895,7 @@ class ValidationPage(QWidget):
         self._show_message("")
         self.verdict_panel.set_taxonomy(taxonomy)
         self.verdict_panel.set_blind(session.blind)
+        self._show_tags()
         self.track_model.set_blind(session.blind, apply=False)
         self.sort_combo.blockSignals(True)
         stored_sort = str(_settings().value(_SETTINGS_KEY_SORT, TrackListModel.DEFAULT_SORT))
@@ -3998,13 +4133,13 @@ class ValidationPage(QWidget):
             return RowStatus(None, verdict.image_quality == "low",
                              has_qualifier(verdict.qualifier, ID_QUALIFIER_INC),
                              verdict.multiple_individuals, linked, continued, individual, n_individual, candidate,
-                             verdict.prefilled_from, verdict.prefill_edited)
+                             verdict.prefilled_from, verdict.prefill_edited, verdict.tags, verdict.notes.strip())
         verdict_type, _, lowest = self.session.derived(key)
         return RowStatus(verdict_type, verdict.image_quality == "low",
                          bool(has_qualifier(verdict.qualifier, ID_QUALIFIER_INC) and lowest),
                          verdict.multiple_individuals if not verdict.false_positive else None,
                          linked, continued, individual, n_individual, candidate,
-                         verdict.prefilled_from, verdict.prefill_edited)
+                         verdict.prefilled_from, verdict.prefill_edited, verdict.tags, verdict.notes.strip())
 
     def _apply_list_filter(self, *_args: Any) -> None:
         """Apply the list filter and search, keeping the shown track selected."""
@@ -4621,6 +4756,49 @@ class ValidationPage(QWidget):
             return
         self.session.set_note(self._current, notes)
         self._save_timer.start()
+
+    def _on_tag_added(self, text: str) -> None:
+        """Add a tag to the session's tag list (set on tracks only by its chip or shortcut)."""
+        if self.session is None or self.session.add_tag(text) is None:
+            return
+        self._show_tags()
+        self._save_timer.start()
+
+    def _on_tag_moved(self, tag: str, index: int) -> None:
+        """Move a tag in the session's tag list (shortcut order)."""
+        if self.session is None:
+            return
+        self.session.move_tag(tag, index)
+        self._show_tags()
+        self._save_timer.start()
+
+    def _on_tag_removal(self, tag: str) -> None:
+        """Delete a tag from the session's tag list and, after asking, from every track that carries it."""
+        if self.session is None:
+            return
+        if n_tagged := len(self.session.tagged_keys(tag)):
+            reply = QMessageBox.question(
+                self, "Delete tag", f"'{tag}' is set on {n_tagged} track{'' if n_tagged == 1 else 's'}. "
+                "Delete the tag and remove it from them?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel, QMessageBox.StandardButton.Cancel)
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        for key in self.session.remove_tag(tag):
+            self.track_model.refresh_key(key)
+        self._show_tags()
+        self._refresh_shown_track()
+        self._sync_batch()
+        self._update_progress()
+        self._save_timer.start()
+        self._show_message(f"Deleted tag '{tag}'"
+                           + (f" from {n_tagged} track{'' if n_tagged == 1 else 's'}" if n_tagged else ""))
+
+    def _show_tags(self) -> None:
+        """Show the session's tag list in the verdict panel and remember it for the next new session."""
+        if self.session is None:
+            return
+        self.verdict_panel.set_tags(self.session.tags)
+        _settings().setValue(_SETTINGS_KEY_TAGS, ";".join(self.session.tags))
 
     def _on_custom_taxon(self, rank: str, lineage: Lineage) -> None:
         """Remember a free-text lineage in the session."""

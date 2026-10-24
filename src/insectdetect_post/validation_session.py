@@ -24,6 +24,7 @@ Functions:
     safe_validator_name(): Filename-safe validator name.
     new_validation_session_id(): ID of a new session.
     parse_links(), join_links(), with_link(): Read and edit 'same_individual_as' values.
+    normalize_tag(), parse_tags(), join_tags(), with_tag(): Read and edit 'tags' values.
     has_qualifier(), with_qualifier(), allowed_qualifier(), qualifier_mark(): Identification qualifiers.
     derive_verdict(): Verdict type, agreement rank and lowest determined rank.
     verdict_columns(), verdict_frame(): Verdict columns of the session CSV.
@@ -45,7 +46,7 @@ import logging
 import re
 import shutil
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
@@ -58,6 +59,7 @@ from insectdetect_post.constants import (
     TRACK_KEY_COLUMNS,
     VALIDATION_EFFORT_IDLE_CAP_S,
     VALIDATION_SEED_DEFAULT,
+    VALIDATION_TAG_MAX_CHARS,
     OutputLayout,
 )
 from insectdetect_post.validation_run import TrackKey, ValidationRun, track_id_order
@@ -131,7 +133,7 @@ _VERDICT_COLUMNS = [
     "validated", "validated_at", "validator", "verdict",
     "image_quality", "image_quality_reason", "multiple_individuals", "same_individual_as",
     *[f"val_{r}" for r in _RANKS_CSV],
-    "val_lowest_rank", "val_qualifier", "val_sex", "val_source", "agree_rank", "notes",
+    "val_lowest_rank", "val_qualifier", "val_sex", "val_source", "agree_rank", "tags", "notes",
     "seconds_spent", "prefilled_from", "prefill_edited",
 ]
 
@@ -151,10 +153,15 @@ _META_KEYS = frozenset({
 })
 
 # Keys added to the session JSON later, with the value that reproduces older sessions (not in _META_KEYS)
-_META_DEFAULTS: dict[str, Any] = {}
+_META_DEFAULTS: dict[str, Any] = {
+    "tags": [],  # tag list of the session, its order numbers the tag shortcuts
+}
 
 # Separator of the track IDs in a 'same_individual_as' value
 _LINK_SEPARATOR = ";"
+
+# Separator of the tags in a 'tags' value
+_TAG_SEPARATOR = ";"
 
 
 def safe_validator_name(name: str) -> str:
@@ -237,6 +244,7 @@ class Verdict:
     val_source: str | None = None
     qualifier: str | None = None  # space-separated _ID_QUALIFIERS, e.g. 'inc. agg.'
     sex: str | None = None  # 'female' or 'male'
+    tags: tuple[str, ...] = ()  # sorted, see parse_tags()
     notes: str = ""
     seconds: float = 0.0  # validation effort (managed by the session)
     prefilled_from: str | None = None  # stem of the session it was pre-filled from (managed by the session)
@@ -250,6 +258,12 @@ class Verdict:
     def not_assessable(self) -> bool:
         """Whether the track has low image quality or shows different taxa (in the crops or along the track)."""
         return self.image_quality == "low" or self.multiple_individuals in MULTIPLE_INDIVIDUALS_NOT_ASSESSABLE
+
+    @property
+    def has_pending_content(self) -> bool:
+        """Whether the entry holds something a track keeps without a verdict (see ValidationSession.set_pending())."""
+        return bool(self.notes.strip() or self.image_quality == "low" or self.multiple_individuals
+                    or self.same_individual_as or self.qualifier or self.sex or self.tags)
 
     def determinate_ranks(self) -> list[str]:
         """Return the ranks with a taxon name (not empty, not indet.)."""
@@ -283,6 +297,27 @@ def with_link(value: str | None, track_id: str, enabled: bool) -> str | None:
     elif not enabled:
         ids = [i for i in ids if i != track_id]
     return join_links(ids)
+
+
+def normalize_tag(text: str) -> str:
+    """Return a tag as stored: single spaces, no separator, at most VALIDATION_TAG_MAX_CHARS characters."""
+    return " ".join(text.replace(_TAG_SEPARATOR, " ").split())[:VALIDATION_TAG_MAX_CHARS].strip()
+
+
+def parse_tags(value: str | None) -> tuple[str, ...]:
+    """Return the tags stored in a 'tags' value ('pollen;mating pair' -> ('mating pair', 'pollen'))."""
+    return _sorted_tags(str(value or "").split(_TAG_SEPARATOR))
+
+
+def join_tags(tags: Iterable[str]) -> str | None:
+    """Join tags into a 'tags' value (inverse of parse_tags(), None if empty)."""
+    return _TAG_SEPARATOR.join(_sorted_tags(tags)) or None
+
+
+def with_tag(tags: Iterable[str], tag: str, enabled: bool) -> tuple[str, ...]:
+    """Add or remove one tag."""
+    others = [t for t in tags if t != tag]
+    return _sorted_tags([*others, tag] if enabled else others)
 
 
 def has_qualifier(qualifier: str | None, which: str) -> bool:
@@ -476,6 +511,11 @@ class ValidationSession:
         """Deepest rank the run was classified to."""
         return str(self.meta["model_rank"])
 
+    @property
+    def tags(self) -> list[str]:
+        """Tag list of the session, in shortcut order."""
+        return list(self.meta["tags"])
+
     @staticmethod
     def list_sessions(run_root: Path) -> list[dict[str, Any]]:
         """Return summaries of the stored sessions of a run, last updated first."""
@@ -490,7 +530,7 @@ class ValidationSession:
             result.append({
                 **{key: meta[key] for key in ("validator", "validation_session_id", "started", "updated", "blind",
                                               "final_csv", "sampling", "n_sampled", "n_validated",
-                                              "prefilled_from_sessions")},
+                                              "prefilled_from_sessions", "tags")},
                 "csv_path": json_path.with_name(f"{stem}{_SESSION_CSV_SUFFIX}"),
             })
         result.sort(key=lambda s: s["updated"], reverse=True)
@@ -505,6 +545,7 @@ class ValidationSession:
         sampling: SamplingConfig,
         taxonomy: TaxonomyIndex,
         blind: bool = False,
+        tags: Sequence[str] = (),
     ) -> ValidationSession:
         """Create a new session from sampled tracks.
 
@@ -515,6 +556,7 @@ class ValidationSession:
             sampling: Sampling parameters.
             taxonomy: Maps model species to canonical names.
             blind: Hide the model prediction until a determination is entered.
+            tags: Starting tag list, in shortcut order.
 
         Returns:
             New unsaved session.
@@ -580,6 +622,8 @@ class ValidationSession:
             **copy.deepcopy(_META_DEFAULTS),
         }
         session = cls(run.root, validator, base, meta)
+        for tag in tags:
+            session.add_tag(tag)
         session.unsaved = True
         return session
 
@@ -617,17 +661,9 @@ class ValidationSession:
         run_root = csv_path.parent.parent
         session = cls(run_root, validator, base, meta)
         for row in df.select([*TRACK_KEY_COLUMNS, *_VERDICT_COLUMNS]).iter_rows(named=True):
-            validated = str(row.get("validated") or "").lower() == "true"
-            pending_content = ((row.get("notes") or "").strip() or row.get("image_quality") == "low"
-                               or row.get("multiple_individuals") or row.get("same_individual_as")
-                               or row.get("val_qualifier") or row.get("val_sex"))
             key: TrackKey = tuple(row[c] for c in TRACK_KEY_COLUMNS)  # type: ignore[assignment]
-            if not validated and not pending_content:
-                if row.get("seconds_spent"):  # effort on a track without a verdict yet
-                    session._pending_seconds[key] = float(row["seconds_spent"])
-                continue
-            session._store(key, Verdict(
-                validated=validated,
+            verdict = Verdict(
+                validated=str(row.get("validated") or "").lower() == "true",
                 validated_at=row.get("validated_at") or None,
                 false_positive=row.get("verdict") == "false_positive",
                 image_quality=row.get("image_quality") or "ok",
@@ -638,11 +674,17 @@ class ValidationSession:
                 val_source=row.get("val_source") or None,
                 qualifier=row.get("val_qualifier") or None,
                 sex=row.get("val_sex") or None,
+                tags=parse_tags(row.get("tags")),
                 notes=row.get("notes") or "",
                 seconds=float(row.get("seconds_spent") or 0.0),
                 prefilled_from=row.get("prefilled_from") or None,
                 prefill_edited=str(row.get("prefill_edited") or "").lower() == "true",
-            ))
+            )
+            if not verdict.validated and not verdict.has_pending_content:
+                if verdict.seconds:  # effort on a track without a verdict yet
+                    session._pending_seconds[key] = verdict.seconds
+                continue
+            session._store(key, verdict)
         session._recent = None  # rebuilt on first use
         logger.info("Loaded session '%s': %d/%d tracks validated", csv_path.name, session.progress()[0], base.height)
         return session
@@ -782,7 +824,7 @@ class ValidationSession:
         self.set_pending(key, pending)
 
     def set_pending(self, key: TrackKey, verdict: Verdict) -> bool:
-        """Store notes, flags, qualifier and sex of a track that is not validated yet.
+        """Store links, flags, tags, notes, qualifier and sex of a track that is not validated yet.
 
         The track stays to do, an entry without content is dropped. Ignored for validated tracks.
 
@@ -792,9 +834,7 @@ class ValidationSession:
         entry = self.verdicts.get(key)
         if entry is not None and entry.validated:
             return False
-        has_content = ((verdict.notes or "").strip() or verdict.image_quality == "low" or verdict.multiple_individuals
-                       or verdict.same_individual_as or verdict.qualifier or verdict.sex)
-        if not has_content:
+        if not verdict.has_pending_content:
             if entry is not None:
                 self._remove(key)
                 self.unsaved = True
@@ -862,6 +902,55 @@ class ValidationSession:
         if entry not in self.meta["custom_taxa"]:
             self.meta["custom_taxa"].append(entry)
             self.unsaved = True
+
+    def add_tag(self, text: str) -> str | None:
+        """Append a tag to the tag list, unless it is there already (ignoring case).
+
+        Returns:
+            The tag as listed (the existing spelling of a known tag), None if 'text' holds no tag.
+        """
+        tag = normalize_tag(text)
+        if not tag:
+            return None
+        if known := next((t for t in self.meta["tags"] if t.casefold() == tag.casefold()), None):
+            return known
+        self.meta["tags"].append(tag)
+        self.unsaved = True
+        return tag
+
+    def move_tag(self, tag: str, index: int) -> None:
+        """Move a listed tag to 'index' of the tag list (shortcut order)."""
+        tags: list[str] = self.meta["tags"]
+        if tag not in tags:
+            return
+        index = max(0, min(index, len(tags) - 1))
+        if tags.index(tag) != index:
+            tags.remove(tag)
+            tags.insert(index, tag)
+            self.unsaved = True
+
+    def tagged_keys(self, tag: str) -> list[TrackKey]:
+        """Return the tracks that carry a tag (validated or pending)."""
+        return [key for key, entry in self.verdicts.items() if tag in entry.tags]
+
+    def remove_tag(self, tag: str) -> list[TrackKey]:
+        """Remove a tag from the tag list and from every track that carries it.
+
+        Returns:
+            The tracks the tag was removed from.
+        """
+        keys = self.tagged_keys(tag)
+        for key in keys:
+            entry = self.verdicts[key].copy()
+            entry.tags = with_tag(entry.tags, tag, False)
+            if entry.validated:
+                self.set_verdict(key, entry)
+            else:
+                self.set_pending(key, entry)  # dropped if the tag was its only content
+        if tag in self.meta["tags"]:
+            self.meta["tags"].remove(tag)
+            self.unsaved = True
+        return keys
 
     def seconds_spent(self, key: TrackKey) -> float | None:
         """Return the validation effort of a track (also without a verdict), None if none was recorded."""
@@ -931,6 +1020,8 @@ class ValidationSession:
         """Store a verdict and update the indexes."""
         self._remove(key)
         self.verdicts[key] = verdict
+        # A tag of a track is always listed (also one pre-filled from another session)
+        self.meta["tags"].extend(tag for tag in verdict.tags if tag not in self.meta["tags"])
         if not verdict.false_positive:
             for other in parse_links(verdict.same_individual_as):
                 self._successors.setdefault((key[0], key[1], other), set()).add(key[2])
@@ -967,7 +1058,8 @@ class ValidationSession:
                 "multiple_individuals": verdict.multiple_individuals,
                 "same_individual_as": verdict.same_individual_as,
                 "qualifier": verdict.qualifier, "sex": verdict.sex,
-                "notes": verdict.notes or None,
+                "tags": join_tags(verdict.tags),
+                "notes": verdict.notes.strip() or None,
             })
             if verdict.prefilled_from:
                 event.update({"prefilled_from": verdict.prefilled_from, "prefill_edited": verdict.prefill_edited})
@@ -1013,7 +1105,8 @@ def verdict_columns(
         "val_sex": entry.sex if entry and not (verdict and verdict.false_positive) else None,
         "val_source": verdict.val_source if verdict and not verdict.false_positive else None,
         "agree_rank": agree_rank,
-        "notes": (entry.notes or None) if entry else None,
+        "tags": join_tags(entry.tags) if entry else None,
+        "notes": (entry.notes.strip() or None) if entry else None,
         "seconds_spent": seconds,
         "prefilled_from": entry.prefilled_from if entry else None,
         "prefill_edited": entry.prefill_edited if entry and entry.prefilled_from else None,
@@ -1256,6 +1349,12 @@ def app_version() -> str:
         return version("insect-detect-post")
     except PackageNotFoundError:
         return "unknown"
+
+
+def _sorted_tags(tags: Iterable[str]) -> tuple[str, ...]:
+    """Return tags normalized, without empty ones and duplicates, sorted ignoring case."""
+    unique = dict.fromkeys(tag for tag in map(normalize_tag, tags) if tag)
+    return tuple(sorted(unique, key=lambda tag: (tag.casefold(), tag)))
 
 
 def _same_judgement(a: Verdict, b: Verdict) -> bool:

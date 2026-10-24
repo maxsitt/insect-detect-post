@@ -8,7 +8,7 @@ Docs:     https://maxsitt.github.io/insect-detect-docs/
 
 The sessions are given in priority order, the first one wins. A track validated in several sessions gets
 the verdict of the first of them ('priority'), or the deepest taxon all of them agree on
-('lowest_common_ancestor'). Everything but the determination (flags, notes, links, effort) comes from the
+('lowest_common_ancestor'). Everything but the determination (links, flags, tags, notes, effort) comes from the
 first session either way. The export copies the session files into its folder first and reads them from
 there, so the folder holds the exact input of its CSV.
 
@@ -151,7 +151,7 @@ class MultiExport:
 def select_verdicts(sessions: Sequence[ValidationSession], rule: str = CONFLICT_RULE_PRIORITY) -> VerdictSelection:
     """Return one verdict per track from sessions in priority order (the first session wins).
 
-    A validated verdict wins over a pending entry (notes, flags or links without a verdict), which is taken
+    A validated verdict wins over a pending entry (links, flags, tags or notes without a verdict), which is taken
     from the first session that has one. Links to a track whose chosen verdict is a false positive are removed.
 
     Args:
@@ -292,7 +292,7 @@ def prefill_sources(infos: Sequence[dict[str, Any]], validator: str, blind: bool
 
 
 def prefill_counts(selection: VerdictSelection, keys: Iterable[TrackKey]) -> tuple[int, int]:
-    """Return how many of 'keys' a selection pre-fills with a verdict, and with notes, flags or links only."""
+    """Return how many of 'keys' a selection pre-fills with a verdict, and with links, flags, tags or notes only."""
     entries = [sel.verdict for key in keys if (sel := selection.verdicts.get(key)) is not None]
     n_validated = sum(1 for entry in entries if entry.validated)
     return n_validated, len(entries) - n_validated
@@ -303,7 +303,7 @@ def prefill_session(session: ValidationSession, sources: Sequence[ValidationSess
     """Pre-fill a new session with the entries of earlier sessions on its sampled tracks.
 
     Each sampled track takes the entry of the latest source that has one (see select_verdicts(), a verdict
-    before notes, flags or links alone), with its time and effort. Its same-individual links are replaced by
+    before links, flags, tags or notes alone), with its time and effort. Its same-individual links are replaced by
     every earlier track of the individual, which the links of the chosen entries form together (also those of
     tracks outside the new sample), so that a chain through a track the new sample does not contain stays one
     individual. Tracks outside the new sample are not added: the sample stays the one the session was drawn with.
@@ -314,7 +314,7 @@ def prefill_session(session: ValidationSession, sources: Sequence[ValidationSess
         run: Opened run (start times of the tracks).
 
     Returns:
-        The tracks pre-filled with a verdict, and with notes, flags or links only.
+        The tracks pre-filled with a verdict, and with links, flags, tags or notes only.
     """
     selection = select_verdicts(sources)
     earlier = _earlier_tracks(selection, run)
@@ -333,7 +333,7 @@ def prefill_session(session: ValidationSession, sources: Sequence[ValidationSess
         for entry in source.meta["custom_taxa"]:
             session.add_custom_taxon(entry["rank"], entry)
     n_validated, n_pending = prefill_counts(selection, queue)
-    logger.info("Session pre-filled from %d sessions: %d tracks with a verdict, %d with notes, flags or links",
+    logger.info("Session pre-filled from %d sessions: %d tracks with a verdict, %d with links, flags, tags or notes",
                 len(sources), n_validated, n_pending)
     return n_validated, n_pending
 
