@@ -787,9 +787,9 @@ class ValidationSession:
             recent: list[Lineage] = []
             ordered = sorted(self.verdicts.values(), key=lambda v: v.validated_at or "", reverse=True)
             for verdict in ordered:
-                if not verdict.validated or verdict.false_positive or not verdict.determinate_ranks():
+                lineage = _recent_lineage(verdict)
+                if lineage is None:
                     continue
-                lineage = dict(verdict.val)
                 if lineage not in recent:
                     recent.append(lineage)
                 if len(recent) >= _RECENT_LINEAGES_KEPT:
@@ -870,6 +870,7 @@ class ValidationSession:
     def reset(self, key: TrackKey) -> None:
         """Remove the human verdict of a track."""
         entry = self._remove(key)
+        self._drop_recent(entry)
         if entry is not None:
             if entry.validated:
                 self._log("reset", key, None)
@@ -1018,17 +1019,18 @@ class ValidationSession:
 
     def _store(self, key: TrackKey, verdict: Verdict) -> None:
         """Store a verdict and update the indexes."""
-        self._remove(key)
+        previous = self._remove(key)
         self.verdicts[key] = verdict
         # A tag of a track is always listed (also one pre-filled from another session)
         self.meta["tags"].extend(tag for tag in verdict.tags if tag not in self.meta["tags"])
         if not verdict.false_positive:
             for other in parse_links(verdict.same_individual_as):
                 self._successors.setdefault((key[0], key[1], other), set()).add(key[2])
-        if (verdict.validated and self._recent is not None and not verdict.false_positive
-                and verdict.determinate_ranks()):
-            lineage = dict(verdict.val)
+        # A new or changed determination becomes the newest recent lineage, an unchanged one keeps its place
+        lineage = _recent_lineage(verdict)
+        if self._recent is not None and lineage is not None and lineage != _recent_lineage(previous):
             self._recent = [lineage, *[lin for lin in self._recent if lin != lineage]][:_RECENT_LINEAGES_KEPT]
+        self._drop_recent(previous, lineage)
 
     def _remove(self, key: TrackKey) -> Verdict | None:
         """Remove a verdict from the store and the indexes, then return it."""
@@ -1041,9 +1043,20 @@ class ValidationSession:
                     successors.discard(key[2])
                     if not successors:
                         del self._successors[(key[0], key[1], other)]
-            if entry.validated:
-                self._recent = None  # rebuilt on next use
         return entry
+
+    def _drop_recent(self, removed: Verdict | None, kept: Lineage | None = None) -> None:
+        """Remove the lineage of a replaced or reset verdict from the recent lineages if no track has it any more.
+
+        Args:
+            removed: The verdict that was replaced or reset.
+            kept: Lineage of the verdict that replaced it (None: reset).
+        """
+        lineage = _recent_lineage(removed)
+        if self._recent is None or lineage is None or lineage == kept:
+            return
+        if not any(_recent_lineage(v) == lineage for v in self.verdicts.values()):
+            self._recent = [lin for lin in self._recent if lin != lineage]
 
     def _log(self, action: str, key: TrackKey, verdict: Verdict | None) -> None:
         """Queue a history event (written to the history file on the next save)."""
@@ -1355,6 +1368,13 @@ def _sorted_tags(tags: Iterable[str]) -> tuple[str, ...]:
     """Return tags normalized, without empty ones and duplicates, sorted ignoring case."""
     unique = dict.fromkeys(tag for tag in map(normalize_tag, tags) if tag)
     return tuple(sorted(unique, key=lambda tag: (tag.casefold(), tag)))
+
+
+def _recent_lineage(verdict: Verdict | None) -> Lineage | None:
+    """Return the lineage a verdict adds to the recent lineages, None for none (to do, false positive, all indet.)."""
+    if verdict is None or not verdict.validated or verdict.false_positive or not verdict.determinate_ranks():
+        return None
+    return dict(verdict.val)
 
 
 def _same_judgement(a: Verdict, b: Verdict) -> bool:
