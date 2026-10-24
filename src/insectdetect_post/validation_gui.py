@@ -458,7 +458,7 @@ determinable from the images) - e.g. &ldquo;certainly Syrphidae, genus unclear&r
 <td>Pick or type the taxon: higher ranks are filled in, lower ranks are reset. With the genus set, the species
 field accepts the epithet alone (&ldquo;balteatus&rdquo;). Taxa missing from the list can be typed in. The
 <b>?</b> next to a rank sets it and all lower ranks to <i>indet.</i>, click it again to restore the model&rsquo;s
-name. <i>Recent</i> applies a determination you used before with one click.</td></tr>
+name. <i>Recent</i> applies a determination you used before with one click, <b>D</b> the leftmost one.</td></tr>
 <tr><td><b>Not an arthropod (F)</b></td>
 <td>A false detection: background, plant part, shadow. Press again to take it back.</td></tr>
 <tr><td><b>Not determinable (U)</b></td>
@@ -552,6 +552,7 @@ keys stay inside the current track: they move between its crops.</p>
 <table cellpadding="4" cellspacing="0" width="100%">
 <tr><td width="26%"><b>A</b></td><td>Agree with the model prediction</td></tr>
 <tr><td><b>1 - 4</b></td><td>Agree down to class / order / family / genus</td></tr>
+<tr><td><b>D</b></td><td>Apply the leftmost <i>Recent</i> determination</td></tr>
 <tr><td><b>F</b> / <b>U</b></td><td>Toggle not an arthropod / not determinable</td></tr>
 <tr><td><b>I</b> / <b>G</b></td><td>Toggle uncertain (inc.) / aggregate (agg.)</td></tr>
 <tr><td><b>L</b></td><td>Link to the nearest earlier track (again: clear the links)</td></tr>
@@ -2357,6 +2358,7 @@ class VerdictPanel(QWidget):
         self._syncing_links = False  # filling the link combo, not an edit
         self._link_order_hint = False  # list not in chronological order
         self._recent: list[Lineage] = []
+        self._chip_lineages: list[Lineage] = []  # lineages of the shown recent chips, left to right
         self._tags: list[str] = []  # tag list of the session, see set_tags()
         self._prefill_note = ""  # where the shown track's entry was pre-filled from, see set_prefill_note()
         self._batch_counts = (0, 0)
@@ -2699,9 +2701,15 @@ class VerdictPanel(QWidget):
         return val
 
     def apply_lineage(self, lineage: Lineage) -> None:
-        """Apply a full/partial lineage (recent identification chip)."""
+        """Apply a full/partial lineage (recent identification chip), also to the selected tracks."""
         new_val: Lineage = {r: (lineage.get(r) or INDET_LABEL) for r in VALIDATION_RANKS}
-        self._store_val(new_val)
+        self._store_val(new_val, one_click=True)
+        self.batch_action.emit("apply_lineage", new_val)
+
+    def apply_first_recent(self) -> None:
+        """Apply the lineage of the leftmost recent identification chip (shortcut)."""
+        if self._chip_lineages:
+            self.apply_lineage(self._chip_lineages[0])
 
     def focus_rank(self, rank: str) -> None:
         """Focus the combo of a rank with its text selected."""
@@ -2765,6 +2773,9 @@ class VerdictPanel(QWidget):
                 base.tags = with_tag(base.tags, payload["tag"], payload["checked"])
             if fresh:
                 base.validated = False  # a flag or tag alone stays pending
+        elif action == "apply_lineage":
+            base.val = dict(payload)
+            base.false_positive, base.val_source = False, self._compute_source(base.val, model)
         elif action == "apply_determination":
             # Only the determination is copied
             current: Verdict = payload
@@ -2893,20 +2904,20 @@ class VerdictPanel(QWidget):
             return dict.fromkeys(VALIDATION_RANKS, INDET_LABEL)
         return self.prefill_for(model, self._model_rank)
 
-    def _store_val(self, val: dict[str, str | None]) -> None:
+    def _store_val(self, val: dict[str, str | None], one_click: bool = False) -> None:
         """Record an edited determination (clears false positive, recomputes the source)."""
         self._verdict.val = val
         self._verdict.false_positive = False
-        self._verdict.val_source = self._compute_source()
-        self._commit()
+        self._verdict.val_source = self._compute_source(val, self._model)
+        self._commit(one_click=one_click)
 
-    def _compute_source(self) -> str:
-        """Return 'model' if the lineage equals the model prefill, else 'free_text' / 'taxonomy_list'."""
-        if all((self._verdict.val.get(r) or INDET_LABEL) == (self._model_prefill().get(r) or INDET_LABEL)
-               for r in VALIDATION_RANKS):
+    def _compute_source(self, val: dict[str, str | None], model: Lineage) -> str:
+        """Return 'model' if 'val' equals the prefill of 'model', else 'free_text' / 'taxonomy_list'."""
+        prefill = self.prefill_for(model, self._model_rank)
+        if all((val.get(r) or INDET_LABEL) == (prefill.get(r) or INDET_LABEL) for r in VALIDATION_RANKS):
             return "model"
         for rank in VALIDATION_RANKS:
-            name = self._verdict.val.get(rank)
+            name = val.get(rank)
             if name and name != INDET_LABEL and self._taxonomy.source_of(rank, name) == "free_text":
                 return "free_text"
         return "taxonomy_list"
@@ -3093,6 +3104,7 @@ class VerdictPanel(QWidget):
     def _render_recent(self, recent: list[Lineage]) -> None:
         """Show chips of the individual's other determinations and of recent lineages."""
         self.recent_row.clear()
+        self._chip_lineages = []
         entries: list[tuple[str, Lineage]] = []
         if self._link_allowed():
             # Lineages of the individual's other tracks
@@ -3112,7 +3124,9 @@ class VerdictPanel(QWidget):
                 continue
             btn = QToolButton()
             btn.setText(prefix + deepest)
-            btn.setToolTip(" › ".join(str(lineage.get(r)) for r in VALIDATION_RANKS if lineage.get(r)))
+            btn.setToolTip(("D · " if not self._chip_lineages else "")
+                           + " › ".join(str(lineage.get(r)) for r in VALIDATION_RANKS if lineage.get(r)))
+            self._chip_lineages.append(dict(lineage))
             btn.setAutoRaise(True)
             btn.setStyleSheet(_CHIP_STYLE)
             btn.clicked.connect(lambda _=False, lin=dict(lineage): self.apply_lineage(lin))
@@ -3584,7 +3598,7 @@ class ValidationPage(QWidget):
         top.addWidget(self.summary_label, 3)
         self.auto_advance_cb = QCheckBox("Auto-advance")
         self.auto_advance_cb.setToolTip("Jump to the next unvalidated track after a one-click verdict (Agree, a "
-                                        "rank button, Not an arthropod, Not determinable)")
+                                        "rank button, a Recent chip, Not an arthropod, Not determinable)")
         self.auto_advance_cb.setChecked(bool(_settings().value(_SETTINGS_KEY_AUTO_ADVANCE, False, type=bool)))
         self.auto_advance_cb.toggled.connect(lambda v: _settings().setValue(_SETTINGS_KEY_AUTO_ADVANCE, v))
         top.addWidget(self.auto_advance_cb)
@@ -3862,6 +3876,7 @@ class ValidationPage(QWidget):
         shortcut("Q", self.verdict_panel.toggle_low_quality)
         shortcut("M", self.verdict_panel.toggle_multiple)
         shortcut("L", self.verdict_panel.toggle_link)
+        shortcut("D", self.verdict_panel.apply_first_recent)
         shortcut("R", self._reset_current)
         shortcut("Space", self.toggle_playback)
         for i, rank in enumerate(VALIDATION_RANKS[:-1], start=1):
@@ -4910,7 +4925,8 @@ class ValidationPage(QWidget):
         if action == "same_individual":
             self._batch_link([*targets, self._current], bool(payload["checked"]))  # type: ignore[list-item]
             return
-        if not self._confirm_batch(len(targets), action.replace("_", " "), others=True):
+        what = "recent determination" if action == "apply_lineage" else action.replace("_", " ")
+        if not self._confirm_batch(len(targets), what, others=True):
             return
         changed = 1  # the shown track
         for key in targets:
