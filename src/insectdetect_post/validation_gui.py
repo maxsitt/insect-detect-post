@@ -490,7 +490,8 @@ earlier tracks in the <i>Same individual as</i> dropdown (<b>L</b> links the nea
 an <i>individual_id</i> in the export, their determinations are not copied. Tracks marked as <i>Not an
 arthropod</i> (false positive) cannot be linked. In chronological order, tracks that could be linked to the shown
 track are highlighted in blue: up to {VALIDATION_SAME_INDIVIDUAL_WINDOW_S:g} s apart from it, or overlapping it by
-up to {VALIDATION_SAME_INDIVIDUAL_OVERLAP_S:g} s. To link tracks further apart, select them and press <b>L</b>
+up to {VALIDATION_SAME_INDIVIDUAL_OVERLAP_S:g} s. The tracks of its individual are highlighted in a lighter blue
+once linked. To link tracks further apart, select them and press <b>L</b>
 (see <i>Batch</i> below).</td></tr>
 <tr><td><b>Multiple individuals (M)</b></td>
 <td>More than one arthropod. <i>In crops</i>: several individuals inside the single crops; <i>in track</i>:
@@ -4888,20 +4889,21 @@ class ValidationPage(QWidget):
         self._update_link_highlight()  # links and false positives change the candidates
 
     def _update_link_highlight(self) -> None:
-        """Pass the shown track's link candidates to the list for highlighting: not linked to it, no false positive."""
+        """Pass the shown track's individual and link candidates (not linked to it, no false positive) to the list."""
         key = self._current
         if self.session is None or key is None or self._link_excluded(key):
-            self.track_model.set_link_candidates({})
+            self.track_model.set_link_highlight({})
             return
         group = set(self.session.group_of(key))
-        candidates = {}
+        highlight = {other: ("linked", f"Same individual as the shown track ID {key[2]}")
+                     for other in group if other != key}
         for other, gap in self._link_partners.get(key, {}).items():
             if other in group or self._link_excluded(other):
                 continue
             when = f"{gap:g} s gap" if gap >= 0 else f"{-gap:g} s overlap"
-            candidates[other] = (f"Link candidate of the shown track ID {key[2]} ({when}) - "
-                                "select both and press L to link")
-        self.track_model.set_link_candidates(candidates)
+            highlight[other] = ("candidate", (f"Link candidate of the shown track ID {key[2]} ({when}) - "
+                                              "select both and press L to link"))
+        self.track_model.set_link_highlight(highlight)
 
     def _batch_targets(self) -> list[TrackKey]:
         """Return the selected tracks other than the current one."""

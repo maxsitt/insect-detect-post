@@ -127,8 +127,8 @@ _VERDICT_GLYPHS: dict[str | None, str] = {
 _LINK_GLYPH_FIRST = "↱"
 LINK_GLYPH_NEXT = "↳"
 
-# Track list: opacity (0-255) of the tint on the shown track's link candidates
-_LINK_CANDIDATE_ALPHA = 80
+# Track list: opacity (0-255) of the tint on the shown track's link candidates and on the tracks linked to it
+_LINK_HIGHLIGHT_ALPHA = {"candidate": 120, "linked": 60}
 
 
 class _ThumbnailSignals(QObject):
@@ -864,15 +864,17 @@ class TrackListModel(QAbstractListModel):
         self._terms: list[tuple[str | None, str]] = []
         self._sort = self.DEFAULT_SORT
         self._blind = False
-        self._link_candidates: dict[tuple, str] = {}
+        self._link_highlight: dict[tuple, tuple[str, str]] = {}
 
-    def set_link_candidates(self, candidates: dict[tuple, str]) -> None:
-        """Set the shown track's link candidates ('key -> tooltip line') and repaint the changed rows.
+    def set_link_highlight(self, highlight: dict[tuple, tuple[str, str]]) -> None:
+        """Set the tracks to tint for the shown track ('key -> (kind, tooltip line)') and repaint the changed rows.
 
+        The kind is 'candidate' (could be linked) or 'linked' (same individual), see _LINK_HIGHLIGHT_ALPHA.
         data() highlights them in CHRONO_SORTS only, so a change of the sort shows or hides them without a call.
         """
-        changed = self._link_candidates.keys() ^ candidates.keys()
-        self._link_candidates = dict(candidates)
+        changed = {key for key in self._link_highlight.keys() | highlight.keys()
+                   if self._link_highlight.get(key) != highlight.get(key)}
+        self._link_highlight = dict(highlight)
         for key in changed:
             self.refresh_key(key)
 
@@ -988,12 +990,13 @@ class TrackListModel(QAbstractListModel):
         row = self._rows[index.row()]
         if role == self.KeyRole:
             return row["key"]
-        candidate_tip = self._link_candidates.get(row["key"]) if self._sort in self.CHRONO_SORTS else None
+        kind, link_tip = self._link_highlight.get(row["key"], (None, None)) if self._sort in self.CHRONO_SORTS \
+            else (None, None)
         if role == Qt.ItemDataRole.BackgroundRole:
-            if candidate_tip is None:
+            if kind is None:
                 return None
             tint = QColor(COLOR_FLAG_SAME_INDIVIDUAL)
-            tint.setAlpha(_LINK_CANDIDATE_ALPHA)
+            tint.setAlpha(_LINK_HIGHLIGHT_ALPHA[kind])
             return tint
         if role not in _STATUS_ROLES:
             return None  # only these roles need the status
@@ -1025,7 +1028,7 @@ class TrackListModel(QAbstractListModel):
                     + (f"\nNotes: {status.notes}" if status.notes else "")
                     + (f"\nPre-filled from {status.prefilled_from}{' (edited)' if status.prefill_edited else ''}"
                        if status.prefilled_from else "")
-                    + (f"\n\n{candidate_tip}" if candidate_tip else ""))
+                    + (f"\n\n{link_tip}" if link_tip else ""))
         if role == Qt.ItemDataRole.ForegroundRole:
             if status.verdict in COLOR_VERDICT:
                 return QColor(COLOR_VERDICT[status.verdict])
