@@ -780,19 +780,14 @@ class SetupPage(QWidget):
         self.sessions_table.itemDoubleClicked.connect(lambda _: self._resume_selected())
         sessions_layout.addWidget(self.sessions_table)
         sessions_buttons = QHBoxLayout()
-        self.resume_btn = StyledButton("Resume selected session", COLOR_BTN_RUN)
+        self.resume_btn = StyledButton("Resume session", COLOR_BTN_VALIDATE)
         self.resume_btn.clicked.connect(self._resume_selected)
         sessions_buttons.addWidget(self.resume_btn)
-        self.use_settings_btn = StyledButton("Use these settings", COLOR_BTN_UPDATE)
-        self.use_settings_btn.setToolTip("Copy the selection, subsample and blind mode of the selected session "
-                                         "into the boxes below, to start a new session with the same settings")
-        self.use_settings_btn.clicked.connect(self._use_settings)
-        sessions_buttons.addWidget(self.use_settings_btn)
-        self.delete_btn = StyledButton("Delete selected sessions", COLOR_BTN_CANCEL)
-        self.delete_btn.setToolTip("Remove the selected sessions with their verdicts, history and exported statistics "
-                                   "(validated exports in the metadata directory are kept)")
-        self.delete_btn.clicked.connect(self._delete_selected)
-        sessions_buttons.addWidget(self.delete_btn)
+        self.copy_settings_btn = StyledButton("Copy settings", COLOR_BTN_UPDATE)
+        self.copy_settings_btn.setToolTip("Copy the selection, subsample and blind mode of the selected session "
+                                          "into the boxes below, to start a new session with the same settings")
+        self.copy_settings_btn.clicked.connect(self._copy_settings)
+        sessions_buttons.addWidget(self.copy_settings_btn)
         self.export_sessions_btn = StyledButton("Export validated CSV", COLOR_BTN_RUN)
         self.export_sessions_btn.setToolTip(
             "Write the validated CSV of the selected session (as on the validation page), or one validated CSV of "
@@ -801,11 +796,16 @@ class SetupPage(QWidget):
         self.export_sessions_btn.clicked.connect(self._export_sessions)
         self.export_sessions_btn.setEnabled(False)
         sessions_buttons.addWidget(self.export_sessions_btn)
+        self.delete_btn = StyledButton("Delete selected sessions", COLOR_BTN_CANCEL)
+        self.delete_btn.setToolTip("Remove the selected sessions with their verdicts, history and exported statistics "
+                                   "(validated exports in the metadata directory are kept)")
+        self.delete_btn.clicked.connect(self._delete_selected)
+        sessions_buttons.addWidget(self.delete_btn)
         sessions_buttons.addStretch()
         self.sessions_hint = QLabel("No sessions yet for this run.")
         sessions_buttons.addWidget(self.sessions_hint)
         sessions_layout.addLayout(sessions_buttons)
-        self.session_buttons = (self.resume_btn, self.use_settings_btn)  # exactly one session
+        self.session_buttons = (self.resume_btn, self.copy_settings_btn)  # exactly one session
         for button in (*self.session_buttons, self.delete_btn):
             button.setEnabled(False)
         self.sessions_table.itemSelectionChanged.connect(self._update_session_buttons)
@@ -1302,7 +1302,7 @@ class SetupPage(QWidget):
         rows = self._selected_rows()
         return self._sessions.get(rows[0]) if len(rows) == 1 else None
 
-    def _use_settings(self) -> None:
+    def _copy_settings(self) -> None:
         """Put the selection, subsample and blind mode of the selected session into the form."""
         info = self._selected_session()
         if info is None:
@@ -1348,7 +1348,8 @@ class SetupPage(QWidget):
         self._updating = False
         self._refresh_filter_lists()  # recount for the session's taxa
         self._update_start_state()
-        self.sessions_hint.setText("Settings copied below - 'Start validation' creates a new session with them.")
+        self.sessions_hint.setText("Settings copied below - 'Start new validation session' creates a new session "
+                                   "with them.")
 
     def _delete_selected(self) -> None:
         """Delete the selected sessions with their files after confirmation (see session_files())."""

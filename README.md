@@ -489,7 +489,7 @@ Validate the same tracks in two sessions only on purpose: `Statistics` compares 
 the same validator or as agreement between validators.
 
 - **Splitting one design** - create one session as a template, then start each part with
-  `Use these settings` and add only a taxa filter, at the rank of the strata. With the same strata and
+  `Copy settings` and add only a taxa filter, at the rank of the strata. With the same strata and
   seed, every part samples exactly the tracks the whole design would have sampled for its taxa.
 - **Pre-filling a new session** - pick sessions in `Pre-fill new session from:` above `Start new validation
   session` to start with your verdicts, links, flags, tags and notes of those sessions (the latest wins)
