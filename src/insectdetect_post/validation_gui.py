@@ -4242,6 +4242,10 @@ class ValidationPage(QWidget):
         self._sync_blind_visibility()
         self._populate_comparison(key, row)
         self._load_crops(key)
+        focus = QApplication.focusWidget()
+        view = self.image_stack.currentWidget()
+        if isinstance(focus, (QLineEdit, TaxonCombo)) and self.verdict_panel.isAncestorOf(focus) and view is not None:
+            view.setFocus()
         # Keep the list selection in sync
         list_row = self.track_model.row_of_key(key)
         if list_row >= 0:
