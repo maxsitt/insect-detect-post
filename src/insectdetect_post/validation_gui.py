@@ -348,17 +348,26 @@ _MAX_LISTED_CHILDREN = 3000
 
 # Track list: labels and tooltips of the filters (TrackListModel.FILTERS)
 _FILTER_LABELS = {
-    "all": "All", "todo": "To do", "link_candidates": "Link candidates", "prefilled": "Pre-filled",
-    "done": "Validated", "agree": "Agreed", "corrected": "Corrected", "indeterminate": "indet. / partial",
-    "uncertain": "Uncertain (inc.)", "false_positive": "False positive", "linked": "Same individual",
-    "multiple": "Multiple individuals", "low_quality": "Low quality", "tagged": "Tagged",
+    "all": "All", "todo": "To do", "done": "Validated",
+    "agree": "Agreed", "indeterminate": "Partial (indet.)", "corrected": "Corrected", "uncertain": "Uncertain (inc.)",
+    "false_positive": "False positive",
+    "linked": "Same individual", "link_candidates": "Link candidates",
+    "multiple": "Multiple individuals", "low_quality": "Low quality",
+    "tagged": "Tagged", "notes": "With notes", "prefilled": "Pre-filled",
 }
 _FILTER_TOOLTIPS = {
-    "tagged": "Tracks with at least one tag; search a tag to find its tracks",
-    "prefilled": "Tracks whose verdict, links, flags, tags or notes were pre-filled from an earlier session",
+    "indeterminate": "Partially confirmed, indeterminate or not assessable tracks",
+    "uncertain": "Tracks whose determination is marked as uncertain (inc.), whatever their verdict",
+    "linked": "Tracks linked to another track as the same individual",
     "link_candidates": (f"Tracks with another track up to {VALIDATION_SAME_INDIVIDUAL_WINDOW_S:g} s before or after "
                         "them - potentially the same individual"),
+    "multiple": "Tracks flagged as showing more than one individual",
+    "tagged": "Tracks with at least one tag; search a tag to find its tracks",
+    "notes": "Tracks with notes; search a word to find a note",
+    "prefilled": "Tracks whose verdict, links, flags, tags or notes were pre-filled from an earlier session",
 }
+# Track list: first filter of each group after the first, separated by a line in the drop-down
+_FILTER_GROUP_STARTS = frozenset({"agree", "linked", "multiple", "tagged"})
 
 # Track list: labels and tooltips of the sort modes (TrackListModel.SORTS)
 _SORT_LABELS = {
@@ -3653,10 +3662,14 @@ class ValidationPage(QWidget):
         filter_row = QHBoxLayout()
         self.filter_combo = QComboBox()
         for mode in TrackListModel.FILTERS:
+            if mode in _FILTER_GROUP_STARTS:
+                self.filter_combo.insertSeparator(self.filter_combo.count())
             self.filter_combo.addItem(_FILTER_LABELS[mode], mode)
             if mode in _FILTER_TOOLTIPS:
                 self.filter_combo.setItemData(self.filter_combo.count() - 1, _FILTER_TOOLTIPS[mode],
                                               Qt.ItemDataRole.ToolTipRole)
+        self.filter_combo.setToolTip("Show only the tracks with this status, verdict or flag. "
+                                     "Combines with the search.")
         self.filter_combo.currentIndexChanged.connect(self._apply_list_filter)
         filter_row.addWidget(self.filter_combo, 1)
         self.search_edit = QLineEdit()

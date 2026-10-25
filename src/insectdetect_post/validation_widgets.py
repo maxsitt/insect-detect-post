@@ -839,8 +839,8 @@ class TrackListModel(QAbstractListModel):
     """
 
     KeyRole = Qt.ItemDataRole.UserRole + 1
-    FILTERS = ("all", "todo", "link_candidates", "prefilled", "done", "agree", "corrected", "indeterminate",
-               "uncertain", "false_positive", "linked", "multiple", "low_quality", "tagged")
+    FILTERS = ("all", "todo", "done", "agree", "indeterminate", "corrected", "uncertain", "false_positive", "linked",
+               "link_candidates", "multiple", "low_quality", "tagged", "notes", "prefilled")
     # Sort mode -> row field, highest first; ties see _tie_break()
     NUMERIC_SORTS: ClassVar[dict[str, str]] = {"prob": "prob", "det_conf": "det_conf", "duration": "duration"}
     SORTS = ("chrono", "setting", "taxonomy", *NUMERIC_SORTS, "queue")  # order of the sort drop-down
@@ -925,6 +925,8 @@ class TrackListModel(QAbstractListModel):
         if mode == "prefilled" and not status.prefilled_from:
             return False
         if mode == "tagged" and not status.tags:
+            return False
+        if mode == "notes" and not status.notes:
             return False
         if self._terms:
             # Blind: the hidden prediction is not searchable
