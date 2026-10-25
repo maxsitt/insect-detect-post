@@ -794,20 +794,26 @@ def parse_search(query: str) -> list[tuple[str | None, str]]:
     return terms
 
 
+def _predicted_taxa(row: dict[str, Any]) -> str:
+    """Return the names of the predicted lineage at every rank, one per line (searchable, see matches_search())."""
+    names = (*[row.get(f"pred_{rank}") for rank in VALIDATION_RANKS], row.get("pred"))
+    return "\n".join(dict.fromkeys(name for name in names if name))
+
+
 def matches_search(row: dict[str, Any], terms: list[tuple[str | None, str]], individual: str = "",
-                   pred: str = "", remarks: str = "") -> bool:
+                   taxa: str = "", remarks: str = "") -> bool:
     """Return whether a track matches every search term.
 
     Numbers match whole ids: without a field the track, session and individual id (not the device).
-    Words match the prediction, the device id and 'remarks' (tags and notes). 'pred' is empty where it must
-    stay hidden.
+    Words match 'taxa' (the taxon names of every rank, one per line), the device id and 'remarks' (tags and
+    notes). 'taxa' is empty where the names must stay hidden.
     """
     device_no = str(row.get("device_no") or "")
     device_id = str(row["device_id"]).casefold()
     session_id = str(row["session_id"]).casefold()
     track_id = str(row["track_id"]).casefold()
     link = individual.casefold()
-    prediction = pred.casefold()
+    taxa = taxa.casefold()
     remarks = remarks.casefold()
     for field, value in terms:
         if field == "device":
@@ -819,7 +825,7 @@ def matches_search(row: dict[str, Any], terms: list[tuple[str | None, str]], ind
         elif value.isdigit():
             ok = value in (track_id, session_id, link)
         else:
-            ok = value in prediction or value in device_id or value in remarks
+            ok = value in taxa or value in device_id or value in remarks
         if not ok:
             return False
     return True
@@ -850,6 +856,7 @@ class TrackListModel(QAbstractListModel):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._all_rows: list[dict[str, Any]] = []
+        self._taxa: dict[tuple, str] = {}  # searchable names of the predicted lineage per key, see set_rows()
         self._rows: list[dict[str, Any]] = []
         self._row_by_key: dict[tuple, int] = {}
         self._status = lambda key: RowStatus()
@@ -892,6 +899,7 @@ class TrackListModel(QAbstractListModel):
     def set_rows(self, rows: list[dict[str, Any]]) -> None:
         """Replace the rows (see the class docstring) and re-apply filter and sort."""
         self._all_rows = rows
+        self._taxa = {row["key"]: _predicted_taxa(row) for row in rows}
         self._apply_filter()
 
     def set_filter(self, mode: str, search: str = "") -> None:
@@ -930,8 +938,8 @@ class TrackListModel(QAbstractListModel):
             return False
         if self._terms:
             # Blind: the hidden prediction is not searchable
-            pred = "" if self._blind and status.verdict is None else (row.get("pred") or "")
-            return matches_search(row, self._terms, status.individual or "", pred,
+            taxa = "" if self._blind and status.verdict is None else self._taxa.get(row["key"], "")
+            return matches_search(row, self._terms, status.individual or "", taxa,
                                   " ".join([*status.tags, status.notes]))
         return True
 

@@ -546,8 +546,9 @@ e.g. &ldquo;mating pair&rdquo; or &ldquo;pollen on the legs&rdquo;.</td></tr>
 taxon, probability or camera setting. The default chronological order keeps neighboring tracks of a device
 together, which helps to spot the same individual. <i>Link candidates</i> shows only tracks that could be
 linked to another track.</li>
-<li><b>Search</b> for what a row shows: <i>ID 140</i>, <i>S3</i>, <i>D1</i> or part of a taxon name, a tag or a
-note. IDs match as a whole (<i>S1</i> does not find S12), and all terms must match (<i>D1 S3</i>).</li>
+<li><b>Search</b> for what a row shows: <i>ID 140</i>, <i>S3</i>, <i>D1</i> or part of a taxon name at any rank
+(<i>Syrphidae</i> finds all predicted hoverflies), a tag or a note. IDs match as a whole (<i>S1</i> does not
+find S12), and all terms must match (<i>D1 S3</i>).</li>
 <li><b>Batch:</b> select several tracks in the list with Ctrl / Shift + click or all with Ctrl+A.
 The verdict, flag and tag buttons then apply to each of them - <i>Agree</i> confirms each track&rsquo;s own prediction.
 <i>Copy determination to selection</i> copies the shown track&rsquo;s determination to the others instead.
@@ -3674,7 +3675,7 @@ class ValidationPage(QWidget):
         filter_row.addWidget(self.filter_combo, 1)
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("Search ID / taxon ...")
-        self.search_edit.setToolTip("Type what a row shows (ID 140, S3, D1) or part of a taxon name")
+        self.search_edit.setToolTip("Type what a row shows (ID 140, S3, D1) or part of a taxon name at any rank")
         self.search_edit.setClearButtonEnabled(True)
         self.search_edit.textChanged.connect(self._apply_list_filter)
         filter_row.addWidget(self.search_edit, 1)
