@@ -249,7 +249,8 @@ class ValidationRun:
         run._image_spans = _spans(images)
         run._candidate_spans = _spans(candidates) if not candidates.is_empty() else {}
         run._dropped = {tuple(row[:3]): row[3] for row in  # type: ignore[misc]
-                        images.filter(pl.col("drop_reason").is_not_null()).group_by(TRACK_KEY_COLUMNS).len().iter_rows()}
+                        images.filter(pl.col("drop_reason").is_not_null())
+                        .group_by(TRACK_KEY_COLUMNS).len().iter_rows()}
         run._check_kept_crops()
         run._timeline = _timeline(tracks)
         if "start_time" in tracks.columns:
