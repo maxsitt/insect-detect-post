@@ -283,6 +283,7 @@ _SETTINGS_KEY_AUTO_ADVANCE = "validation/auto_advance"
 _SETTINGS_KEY_PLAYBACK_MS = "validation/playback_ms"
 _SETTINGS_KEY_COMPARE = "validation/compare_strip"
 _SETTINGS_KEY_SORT = "validation/list_sort"
+_SETTINGS_KEY_SORT_REVERSE = "validation/list_sort_reverse"  # sort direction reversed (reset by a sort change)
 _SETTINGS_KEY_TAGS = "validation/tags"  # tag list of the last opened session, ';'-separated in shortcut order
 
 # Window title on the setup page (an open session shows its run, validator and ID instead)
@@ -359,14 +360,31 @@ _FILTER_TOOLTIPS = {
                         "them - potentially the same individual"),
 }
 
-# Track list: labels of the sort modes (TrackListModel.SORTS)
+# Track list: labels and tooltips of the sort modes (TrackListModel.SORTS)
 _SORT_LABELS = {
-    "chrono": "Chronological per device", "setting": "Camera setting, then chronological",
-    **{mode: f"Predicted {rank} (alphabetically)" for mode, rank in TrackListModel.TAXON_SORTS.items()},
-    "prob_desc": "Weighted probability ↓", "prob_asc": "Weighted probability ↑",
-    "det_conf_desc": "Detection confidence ↓", "det_conf_asc": "Detection confidence ↑",
-    "duration_desc": "Track duration ↓", "duration_asc": "Track duration ↑",
+    "chrono": "Chronological (per device)", "setting": "Camera setting (chronological)",
+    "taxonomy": "Taxonomy (class to species)",
+    "prob": "Weighted probability", "det_conf": "Mean detection confidence", "duration": "Track duration",
     "queue": "Sampling order (shuffled)",
+}
+_SORT_TOOLTIPS = {
+    "chrono": "All tracks of one camera in time order, then the next camera",
+    "setting": "Grouped by camera setting (A-Z), chronological per device within each setting",
+    "taxonomy": "Related taxa grouped from class to species, highest probability first within a taxon",
+    "prob": "Weighted prediction probability of the track",
+    "det_conf": "Mean detection confidence of the track's crops",
+    "duration": "Time from the first to the last detection/crop of the track",
+    "queue": ("The random order of the sample. Validating in this order keeps the estimates unbiased while the "
+              "session is incomplete"),
+}
+
+# Track list: order of each sort mode in its natural and its reversed direction (None = not reversible)
+_SORT_DIRECTIONS: dict[str, tuple[str, str | None]] = {
+    "chrono": ("earliest first", "latest first"),
+    "setting": ("settings A-Z, earliest first", "settings Z-A, latest first"),
+    "taxonomy": ("A-Z, highest probability first", "Z-A, lowest probability first"),
+    **dict.fromkeys(TrackListModel.NUMERIC_SORTS, ("highest first", "lowest first")),
+    "queue": ("sampling order", None),
 }
 
 # Track list: row fields of the numeric sorts that come from a column of the final CSV
@@ -3653,10 +3671,15 @@ class ValidationPage(QWidget):
         self.sort_combo = QComboBox()
         for mode in TrackListModel.SORTS:
             self.sort_combo.addItem(_SORT_LABELS[mode], mode)
-        self.sort_combo.setToolTip("Order of the track list. A taxon sort keeps the lower ranks together, highest "
-                                   "probability first. Equal values are ordered alphabetically by taxon name.")
+            self.sort_combo.setItemData(self.sort_combo.count() - 1, _SORT_TOOLTIPS[mode], Qt.ItemDataRole.ToolTipRole)
+        self.sort_combo.setToolTip("Order of the track list. The arrow next to it reverses the order.")
         self.sort_combo.currentIndexChanged.connect(self._on_sort_changed)
         sort_row.addWidget(self.sort_combo, 1)
+        self.sort_reverse_btn = QToolButton()
+        self.sort_reverse_btn.setCheckable(True)
+        self.sort_reverse_btn.toggled.connect(self._on_sort_reverse_toggled)
+        self._set_sort_reverse_button(False)
+        sort_row.addWidget(self.sort_reverse_btn)
         left_layout.addLayout(sort_row)
         self.track_model = TrackListModel(self)
         self.track_model.set_status_provider(self._status_of)
@@ -3922,16 +3945,13 @@ class ValidationPage(QWidget):
         self._show_tags()
         self.track_model.set_blind(session.blind, apply=False)
         self.sort_combo.blockSignals(True)
-        stored_sort = str(_settings().value(_SETTINGS_KEY_SORT, TrackListModel.DEFAULT_SORT))
-        if stored_sort not in TrackListModel.SORTS:
+        requested_sort = str(_settings().value(_SETTINGS_KEY_SORT, TrackListModel.DEFAULT_SORT))
+        stored_sort = requested_sort if requested_sort in TrackListModel.SORTS else TrackListModel.DEFAULT_SORT
+        # Taxonomy sort: needs a predicted rank, not when blind
+        taxonomy_item = self.sort_combo.model().item(self.sort_combo.findData("taxonomy"))  # type: ignore[union-attr]
+        taxonomy_item.setEnabled(not session.blind and bool(run.active_ranks))
+        if not taxonomy_item.isEnabled() and stored_sort == "taxonomy":
             stored_sort = TrackListModel.DEFAULT_SORT
-        # Taxon sorts: only the run's ranks, none when blind
-        for mode, rank in TrackListModel.TAXON_SORTS.items():
-            available = not session.blind and rank in run.active_ranks
-            item = self.sort_combo.model().item(self.sort_combo.findData(mode))  # type: ignore[union-attr]
-            item.setEnabled(available)
-            if not available and stored_sort == mode:
-                stored_sort = TrackListModel.DEFAULT_SORT
         # Setting sort: at least two setting groups among the session's tracks
         session_tracks = run.tracks.join(
             pl.DataFrame(session.keys(), schema=dict.fromkeys(TRACK_KEY_COLUMNS, pl.String), orient="row"),
@@ -3940,7 +3960,7 @@ class ValidationPage(QWidget):
         setting_item.setEnabled(setting_strata_available(session_tracks))
         if not setting_item.isEnabled() and stored_sort == "setting":
             stored_sort = TrackListModel.DEFAULT_SORT
-        for mode, (field, _) in TrackListModel.NUMERIC_SORTS.items():
+        for mode, field in TrackListModel.NUMERIC_SORTS.items():
             available = field not in _SORT_COLUMNS or _SORT_COLUMNS[field] in run.tracks.columns
             item = self.sort_combo.model().item(self.sort_combo.findData(mode))  # type: ignore[union-attr]
             item.setEnabled(available)
@@ -3948,7 +3968,11 @@ class ValidationPage(QWidget):
                 stored_sort = TrackListModel.DEFAULT_SORT
         self.sort_combo.setCurrentIndex(max(self.sort_combo.findData(stored_sort), 0))
         self.sort_combo.blockSignals(False)
-        self.track_model.set_sort(self.sort_combo.currentData(), apply=False)
+        # The direction belongs to the remembered sort, a fallback starts in its natural direction
+        reverse = (stored_sort == requested_sort
+                   and bool(_settings().value(_SETTINGS_KEY_SORT_REVERSE, False, type=bool)))
+        self._set_sort_reverse_button(reverse)
+        self.track_model.set_sort(self.sort_combo.currentData(), self.sort_reverse_btn.isChecked(), apply=False)
         self._keys = session.keys()
         self._key_set = set(self._keys)
         self._key_pos = {key: i for i, key in enumerate(self._keys)}
@@ -4175,10 +4199,38 @@ class ValidationPage(QWidget):
                 self._select_list_row(self.track_model.index(list_row))
 
     def _on_sort_changed(self, _index: int) -> None:
-        """Re-sort the track list, remember the mode and scroll to the top."""
+        """Re-sort the track list in the natural direction of the new mode, remember it and scroll to the top."""
         mode = self.sort_combo.currentData()
         _settings().setValue(_SETTINGS_KEY_SORT, mode)
-        self.track_model.set_sort(mode)
+        _settings().setValue(_SETTINGS_KEY_SORT_REVERSE, False)
+        self._set_sort_reverse_button(False)
+        self._resort()
+
+    def _on_sort_reverse_toggled(self, reverse: bool) -> None:
+        """Reverse the direction of the sort, remember it and scroll to the top."""
+        _settings().setValue(_SETTINGS_KEY_SORT_REVERSE, reverse)
+        self._set_sort_reverse_button(reverse)
+        self._resort()
+
+    def _set_sort_reverse_button(self, reverse: bool) -> None:
+        """Show the direction of the current sort on its button (disabled if the sort is not reversible)."""
+        natural, reversed_order = _SORT_DIRECTIONS[self.sort_combo.currentData()]
+        reverse = reverse and reversed_order is not None
+        self.sort_reverse_btn.blockSignals(True)
+        self.sort_reverse_btn.setChecked(reverse)
+        self.sort_reverse_btn.blockSignals(False)
+        self.sort_reverse_btn.setEnabled(reversed_order is not None)
+        # ↑ ascending (A-Z, earliest, lowest first), ↓ descending
+        descending = (self.sort_combo.currentData() in TrackListModel.NUMERIC_SORTS) != reverse
+        self.sort_reverse_btn.setText("↓" if descending else "↑")
+        self.sort_reverse_btn.setToolTip(
+            f"Order: {reversed_order if reverse else natural}" + (
+                f" · click for {natural if reverse else reversed_order}" if reversed_order is not None
+                else " (cannot be reversed)"))
+
+    def _resort(self) -> None:
+        """Re-sort the track list by the current mode and direction and scroll to the top."""
+        self.track_model.set_sort(self.sort_combo.currentData(), self.sort_reverse_btn.isChecked())
         self._apply_list_filter()
         self.track_view.scrollToTop()
 

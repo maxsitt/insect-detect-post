@@ -829,28 +829,21 @@ class TrackListModel(QAbstractListModel):
     """List model over the validation queue with filters, search and sorting.
 
     Rows are dicts with 'key', 'track_id', 'device_id', 'device_no', 'session_id', 'setting',
-    'pred', 'prob', 'start_time', 'det_conf' and 'duration'. The RowStatus per key comes from
-    a provider callable.
+    'pred', 'pred_<rank>', 'prob', 'start_time', 'det_conf' and 'duration'. The RowStatus per key
+    comes from a provider callable.
 
     Sort modes: 'chrono' (per device by start time), 'setting' (by camera setting, then chrono),
-    'queue' (sample order), TAXON_SORTS and NUMERIC_SORTS.
+    'taxonomy' (predicted lineage from class to species), NUMERIC_SORTS and 'queue' (sample order).
+    Each mode has a natural direction (NUMERIC_SORTS highest first, the others ascending); 'reverse'
+    flips the whole list.
     """
 
     KeyRole = Qt.ItemDataRole.UserRole + 1
     FILTERS = ("all", "todo", "link_candidates", "prefilled", "done", "agree", "corrected", "indeterminate",
                "uncertain", "false_positive", "linked", "multiple", "low_quality", "tagged")
-    # Sort mode -> (row field, descending); ties see _tie_break()
-    NUMERIC_SORTS: ClassVar[dict[str, tuple[str, bool]]] = {
-        "prob_desc": ("prob", True),
-        "prob_asc": ("prob", False),
-        "det_conf_desc": ("det_conf", True),
-        "det_conf_asc": ("det_conf", False),
-        "duration_desc": ("duration", True),
-        "duration_asc": ("duration", False),
-    }
-    # Sort mode -> rank of the predicted taxon, deeper ranks break ties
-    TAXON_SORTS: ClassVar[dict[str, str]] = {f"taxon_{rank}": rank for rank in VALIDATION_RANKS}
-    SORTS = ("chrono", "setting", *TAXON_SORTS, *NUMERIC_SORTS, "queue")  # order of the sort drop-down
+    # Sort mode -> row field, highest first; ties see _tie_break()
+    NUMERIC_SORTS: ClassVar[dict[str, str]] = {"prob": "prob", "det_conf": "det_conf", "duration": "duration"}
+    SORTS = ("chrono", "setting", "taxonomy", *NUMERIC_SORTS, "queue")  # order of the sort drop-down
     CHRONO_SORTS = ("chrono", "setting")  # keep a device's tracks in time order
     DEFAULT_SORT = "chrono"
 
@@ -863,6 +856,7 @@ class TrackListModel(QAbstractListModel):
         self._filter = "all"
         self._terms: list[tuple[str | None, str]] = []
         self._sort = self.DEFAULT_SORT
+        self._reverse = False
         self._blind = False
         self._link_highlight: dict[tuple, tuple[str, str]] = {}
 
@@ -884,9 +878,10 @@ class TrackListModel(QAbstractListModel):
         if apply:
             self._apply_filter()
 
-    def set_sort(self, mode: str, apply: bool = True) -> None:
-        """Set the sort mode. 'apply=False' defers the re-sort."""
+    def set_sort(self, mode: str, reverse: bool = False, apply: bool = True) -> None:
+        """Set the sort mode and whether to reverse its natural direction. 'apply=False' defers the re-sort."""
         self._sort = mode if mode in self.SORTS else self.DEFAULT_SORT
+        self._reverse = reverse
         if apply:
             self._apply_filter()
 
@@ -952,16 +947,17 @@ class TrackListModel(QAbstractListModel):
             rows.sort(key=lambda r: ((r.get("setting") or "~").casefold() if self._sort == "setting" else "",
                                      r["device_id"], str(r.get("start_time") or ""), str(r["session_id"]).zfill(6),
                                      str(r["track_id"]).zfill(8)))
-        elif self._sort in self.TAXON_SORTS:
-            # The chosen rank first, then the deeper ones
-            ranks = VALIDATION_RANKS[VALIDATION_RANKS.index(self.TAXON_SORTS[self._sort]):]
-            rows.sort(key=lambda r: (*[(r.get(f"pred_{rank}") or "~").casefold() for rank in ranks],
+        elif self._sort == "taxonomy":
+            # Lineage from the highest rank down: related taxa stay together, a missing rank ends its parent group
+            rows.sort(key=lambda r: (*[(r.get(f"pred_{rank}") or "~").casefold() for rank in VALIDATION_RANKS],
                                      -(r.get("prob") or 0.0), str(r["device_id"]),
                                      str(r["session_id"]).zfill(6), str(r["track_id"]).zfill(8)))
         elif self._sort in self.NUMERIC_SORTS:
-            field, descending = self.NUMERIC_SORTS[self._sort]
+            field = self.NUMERIC_SORTS[self._sort]
             rows.sort(key=self._tie_break)  # stable sort keeps this order for ties
-            rows.sort(key=lambda r: -(r.get(field) or 0.0) if descending else (r.get(field) or 0.0))
+            rows.sort(key=lambda r: -(r.get(field) or 0.0))
+        if self._reverse:
+            rows.reverse()
         self._rows = rows
         self._row_by_key = {row["key"]: i for i, row in enumerate(rows)}
         self.endResetModel()
