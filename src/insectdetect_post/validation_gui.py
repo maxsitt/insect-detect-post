@@ -3546,10 +3546,22 @@ class _CompactButton(QPushButton):
     """Push button whose minimum width follows its text instead of the style's minimum button width.
 
     The preferred width stays the style's, so the button only gets narrower when space is short.
+    A checked button is filled with the theme highlight (_STYLE).
     """
 
     # Horizontal padding (px) around the text at the minimum width
     _PAD = 16
+
+    # Checked: filled with the theme highlight, so the active button stands out (colors follow the theme)
+    _STYLE = (
+        "QPushButton { background-color: palette(button); border: 1px solid palette(mid); border-radius: 4px; "
+        "padding: 3px 8px; }"
+        "QPushButton:hover { border-color: palette(highlight); }"
+        "QPushButton:pressed { background-color: palette(dark); }"
+        "QPushButton:checked { background-color: palette(highlight); border-color: palette(highlight); "
+        "color: palette(highlighted-text); }"
+        "QPushButton:checked:disabled { background-color: palette(mid); border-color: palette(mid); }"
+    )
 
     def __init__(self, text: str, *alt_texts: str) -> None:
         """Initialize the button.
@@ -3563,6 +3575,7 @@ class _CompactButton(QPushButton):
         self._texts = (text, *alt_texts)
         # The default policy (Minimum) never shrinks a push button below its preferred width
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.setStyleSheet(self._STYLE)
 
     def minimumSizeHint(self) -> QSize:
         hint = super().minimumSizeHint()
