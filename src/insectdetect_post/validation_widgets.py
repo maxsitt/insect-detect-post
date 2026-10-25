@@ -123,6 +123,10 @@ _VERDICT_GLYPHS: dict[str | None, str] = {
     "indeterminate": "?", "not_assessable": "?",
 }
 
+# Track list: taxon text of validated tracks without a determination (taxon source 'det')
+_NO_TAXON_TEXTS = {"false_positive": "false positive", "indeterminate": INDET_LABEL,
+                   "not_assessable": "not assessable"}
+
 # Track list: marks of an individual's first track and of the tracks continuing it
 _LINK_GLYPH_FIRST = "↱"
 LINK_GLYPH_NEXT = "↳"
@@ -758,6 +762,9 @@ class RowStatus(NamedTuple):
         prefill_edited: The pre-filled entry was changed since.
         tags: Tags of the track.
         notes: Notes of the track.
+        determination: Determined taxon with its qualifier mark (e.g. 'Bombus terrestris agg.'), None if not
+            validated or nothing is determined.
+        lineage: Determined names per VALIDATION_RANKS (None where indet.), empty if 'determination' is None.
     """
     verdict: str | None = None
     low_quality: bool = False
@@ -772,6 +779,8 @@ class RowStatus(NamedTuple):
     prefill_edited: bool = False
     tags: tuple[str, ...] = ()
     notes: str = ""
+    determination: str | None = None
+    lineage: tuple[str | None, ...] = ()
 
 
 def parse_search(query: str) -> list[tuple[str | None, str]]:
@@ -839,9 +848,12 @@ class TrackListModel(QAbstractListModel):
     comes from a provider callable.
 
     Sort modes: 'chrono' (per device by start time), 'setting' (by camera setting, then chrono),
-    'taxonomy' (predicted lineage from class to species), NUMERIC_SORTS and 'queue' (sample order).
+    'taxonomy' (lineage from class to species), NUMERIC_SORTS and 'queue' (sample order).
     Each mode has a natural direction (NUMERIC_SORTS highest first, the others ascending); 'reverse'
     flips the whole list.
+
+    The taxon source (TAXON_SOURCES) sets what the row text, the taxonomy sort and the search use: the
+    prediction, or the determination of validated tracks (tracks still to do keep their prediction).
     """
 
     KeyRole = Qt.ItemDataRole.UserRole + 1
@@ -852,6 +864,7 @@ class TrackListModel(QAbstractListModel):
     SORTS = ("chrono", "setting", "taxonomy", *NUMERIC_SORTS, "queue")  # order of the sort drop-down
     CHRONO_SORTS = ("chrono", "setting")  # keep a device's tracks in time order
     DEFAULT_SORT = "chrono"
+    TAXON_SOURCES = ("pred", "det")
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -865,6 +878,7 @@ class TrackListModel(QAbstractListModel):
         self._sort = self.DEFAULT_SORT
         self._reverse = False
         self._blind = False
+        self._source = "pred"
         self._link_highlight: dict[tuple, tuple[str, str]] = {}
 
     def set_link_highlight(self, highlight: dict[tuple, tuple[str, str]]) -> None:
@@ -882,6 +896,17 @@ class TrackListModel(QAbstractListModel):
     def set_blind(self, blind: bool, apply: bool = True) -> None:
         """Hide the prediction of tracks not validated yet."""
         self._blind = blind
+        if apply:
+            self._apply_filter()
+
+    @property
+    def taxon_source(self) -> str:
+        """Return the taxon source (TAXON_SOURCES)."""
+        return self._source
+
+    def set_taxon_source(self, source: str, apply: bool = True) -> None:
+        """Set whether rows show, sort and search by prediction or determination (TAXON_SOURCES)."""
+        self._source = source if source in self.TAXON_SOURCES else "pred"
         if apply:
             self._apply_filter()
 
@@ -937,16 +962,54 @@ class TrackListModel(QAbstractListModel):
         if mode == "notes" and not status.notes:
             return False
         if self._terms:
-            # Blind: the hidden prediction is not searchable
-            taxa = "" if self._blind and status.verdict is None else self._taxa.get(row["key"], "")
+            if self._shows_determination(status):
+                taxa = "\n".join(name for name in (*status.lineage, status.determination) if name)
+            else:
+                # Blind: the hidden prediction is not searchable
+                taxa = "" if self._blind and status.verdict is None else self._taxa.get(row["key"], "")
             return matches_search(row, self._terms, status.individual or "", taxa,
                                   " ".join([*status.tags, status.notes]))
         return True
 
+    def _shows_determination(self, status: RowStatus) -> bool:
+        """Return whether a row shows its determination instead of the prediction (validated, source 'det')."""
+        return self._source == "det" and status.verdict is not None
+
     def _tie_break(self, row: dict[str, Any]) -> tuple:
-        """Return the tie order: prediction (not in blind sessions), then track key."""
-        taxon = "" if self._blind else (row.get("pred") or "~").casefold()
+        """Return the tie order: shown taxon (no prediction in blind sessions), then track key."""
+        status = self._status(row["key"])
+        if self._shows_determination(status):
+            taxon = (status.determination or "~").casefold()
+        else:
+            taxon = "" if self._blind else (row.get("pred") or "~").casefold()
         return (taxon, str(row["device_id"]), str(row["session_id"]).zfill(6), str(row["track_id"]).zfill(8))
+
+    def _taxonomy_key(self, row: dict[str, Any]) -> tuple:
+        """Return the taxonomy order: shown lineage from the highest rank down, then highest probability first.
+
+        A missing rank ends its parent group. Validated tracks without a determination follow all taxa (indet. and
+        not assessable, then false positives), hidden predictions of a blind session come last.
+        """
+        status = self._status(row["key"])
+        if self._shows_determination(status):
+            names = status.lineage
+            group = 0 if names else 2 if status.verdict == "false_positive" else 1
+        elif self._blind and status.verdict is None:
+            names, group = (), 3
+        else:
+            names, group = tuple(row.get(f"pred_{rank}") for rank in VALIDATION_RANKS), 0
+        names = names or (None,) * len(VALIDATION_RANKS)
+        return (group, *[(name or "~").casefold() for name in names], -(row.get("prob") or 0.0),
+                str(row["device_id"]), str(row["session_id"]).zfill(6), str(row["track_id"]).zfill(8))
+
+    def _taxon_text(self, row: dict[str, Any], status: RowStatus) -> str:
+        """Return the taxon of a row: determination, or prediction with its probability ('(hidden)' when blind)."""
+        if self._shows_determination(status):
+            return status.determination or _NO_TAXON_TEXTS.get(status.verdict or "", "-")
+        if self._blind and status.verdict is None:
+            return "(hidden)"
+        prob = f"{row['prob']:.2f}" if isinstance(row.get("prob"), float) else "-"
+        return f"{row.get('pred') or '-'} ({prob})"
 
     def _apply_filter(self) -> None:
         """Rebuild the shown rows from filter, search and sort."""
@@ -958,10 +1021,7 @@ class TrackListModel(QAbstractListModel):
                                      r["device_id"], str(r.get("start_time") or ""), str(r["session_id"]).zfill(6),
                                      str(r["track_id"]).zfill(8)))
         elif self._sort == "taxonomy":
-            # Lineage from the highest rank down: related taxa stay together, a missing rank ends its parent group
-            rows.sort(key=lambda r: (*[(r.get(f"pred_{rank}") or "~").casefold() for rank in VALIDATION_RANKS],
-                                     -(r.get("prob") or 0.0), str(r["device_id"]),
-                                     str(r["session_id"]).zfill(6), str(r["track_id"]).zfill(8)))
+            rows.sort(key=self._taxonomy_key)
         elif self._sort in self.NUMERIC_SORTS:
             field = self.NUMERIC_SORTS[self._sort]
             rows.sort(key=self._tie_break)  # stable sort keeps this order for ties
@@ -1010,18 +1070,16 @@ class TrackListModel(QAbstractListModel):
         if role == Qt.ItemDataRole.DisplayRole:
             glyph = _VERDICT_GLYPHS.get(status.verdict, "○")
             quality = (" ⁂" if status.multiple else "") + (" ▾" if status.low_quality else "")
-            prob = f"{row['prob']:.2f}" if isinstance(row.get("prob"), float) else "-"
             where = f"{_device_label(row)}  ·  S{row['session_id']}  ·  ID {row['track_id']}{_link_label(row, status)}"
-            if self._blind and status.verdict is None:
-                return f"{glyph}{quality}  {where}  ·  (hidden)"
-            return f"{glyph}{quality}  {where}  ·  {row.get('pred') or '-'} ({prob})"
+            return f"{glyph}{quality}  {where}  ·  {self._taxon_text(row, status)}"
         if role == Qt.ItemDataRole.ToolTipRole:
             pred = "(hidden)" if self._blind and status.verdict is None else (row.get("pred") or "-")
             verdict = VERDICT_LABELS.get(status.verdict, status.verdict) if status.verdict else "not validated"
             return (f"Device: {_device_label(row)} = {row['device_id']}\nSession: {row['session_id']}\n"
                     f"Track ID: {row['track_id']}\n"
                     f"Prediction: {pred}\n"
-                    f"Verdict: {verdict}"
+                    + (f"Determination: {status.determination}\n" if status.determination else "")
+                    + f"Verdict: {verdict}"
                     + ("\nUncertain (inc.)" if status.uncertain else "")
                     + (f"\nIndividual: ID {status.individual} ({status.n_individual} tracks)"
                        if status.individual else "")

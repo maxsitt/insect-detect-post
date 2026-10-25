@@ -284,6 +284,7 @@ _SETTINGS_KEY_PLAYBACK_MS = "validation/playback_ms"
 _SETTINGS_KEY_COMPARE = "validation/compare_strip"
 _SETTINGS_KEY_SORT = "validation/list_sort"
 _SETTINGS_KEY_SORT_REVERSE = "validation/list_sort_reverse"  # sort direction reversed (reset by a sort change)
+_SETTINGS_KEY_TAXON_SOURCE = "validation/list_taxon_source"  # TrackListModel.TAXON_SOURCES
 _SETTINGS_KEY_TAGS = "validation/tags"  # tag list of the last opened session, ';'-separated in shortcut order
 
 # Window title on the setup page (an open session shows its run, validator and ID instead)
@@ -545,7 +546,8 @@ e.g. &ldquo;mating pair&rdquo; or &ldquo;pollen on the legs&rdquo;.</td></tr>
 <li><b>Filter and sort</b> the list, e.g. only <i>To do</i> or <i>Low quality</i> tracks, sorted by predicted
 taxon, probability or camera setting. The default chronological order keeps neighboring tracks of a device
 together, which helps to spot the same individual. <i>Link candidates</i> shows only tracks that could be
-linked to another track.</li>
+linked to another track. <i>Determination</i> (above the list) shows, sorts and searches the validated tracks
+by your determination instead of the prediction.</li>
 <li><b>Search</b> for what a row shows: <i>ID 140</i>, <i>S3</i>, <i>D1</i> or part of a taxon name at any rank
 (<i>Syrphidae</i> finds all predicted hoverflies), a tag or a note. IDs match as a whole (<i>S1</i> does not
 find S12), and all terms must match (<i>D1 S3</i>).</li>
@@ -3695,6 +3697,21 @@ class ValidationPage(QWidget):
         self._set_sort_reverse_button(False)
         sort_row.addWidget(self.sort_reverse_btn)
         left_layout.addLayout(sort_row)
+        source_row = QHBoxLayout()
+        self.pred_source_btn = _CompactButton("Prediction")
+        self.pred_source_btn.setToolTip("Show, sort and search the tracks by the model prediction")
+        self.det_source_btn = _CompactButton("Determination")
+        self.det_source_btn.setToolTip("Show, sort and search the validated tracks by their determination (tracks "
+                                       "still to do keep their prediction). With the 'Validated' filter: only "
+                                       "your determinations")
+        source_group = QButtonGroup(self)
+        source_group.setExclusive(True)
+        for source, btn in (("pred", self.pred_source_btn), ("det", self.det_source_btn)):
+            btn.setCheckable(True)
+            source_group.addButton(btn)
+            btn.clicked.connect(lambda _checked, s=source: self._set_taxon_source(s))
+            source_row.addWidget(btn, 1)
+        left_layout.addLayout(source_row)
         self.track_model = TrackListModel(self)
         self.track_model.set_status_provider(self._status_of)
         self.track_view = QListView()
@@ -3958,13 +3975,14 @@ class ValidationPage(QWidget):
         self.verdict_panel.set_blind(session.blind)
         self._show_tags()
         self.track_model.set_blind(session.blind, apply=False)
+        source = str(_settings().value(_SETTINGS_KEY_TAXON_SOURCE, "pred"))
+        self.track_model.set_taxon_source(source, apply=False)
+        self.det_source_btn.setChecked(self.track_model.taxon_source == "det")
+        self.pred_source_btn.setChecked(self.track_model.taxon_source == "pred")
         self.sort_combo.blockSignals(True)
         requested_sort = str(_settings().value(_SETTINGS_KEY_SORT, TrackListModel.DEFAULT_SORT))
         stored_sort = requested_sort if requested_sort in TrackListModel.SORTS else TrackListModel.DEFAULT_SORT
-        # Taxonomy sort: needs a predicted rank, not when blind
-        taxonomy_item = self.sort_combo.model().item(self.sort_combo.findData("taxonomy"))  # type: ignore[union-attr]
-        taxonomy_item.setEnabled(not session.blind and bool(run.active_ranks))
-        if not taxonomy_item.isEnabled() and stored_sort == "taxonomy":
+        if not self._update_taxonomy_sort() and stored_sort == "taxonomy":
             stored_sort = TrackListModel.DEFAULT_SORT
         # Setting sort: at least two setting groups among the session's tracks
         session_tracks = run.tracks.join(
@@ -4197,11 +4215,18 @@ class ValidationPage(QWidget):
                              verdict.multiple_individuals, linked, continued, individual, n_individual, candidate,
                              verdict.prefilled_from, verdict.prefill_edited, verdict.tags, verdict.notes.strip())
         verdict_type, _, lowest = self.session.derived(key)
+        determination, lineage = None, ()
+        if lowest:  # not for false positives or nothing determined
+            determinate = verdict.determinate_ranks()
+            lineage = tuple(verdict.val.get(rank) if rank in determinate else None for rank in VALIDATION_RANKS)
+            mark = qualifier_mark(verdict.qualifier, lowest)
+            determination = f"{verdict.val[lowest]} {mark}" if mark else verdict.val[lowest]
         return RowStatus(verdict_type, verdict.image_quality == "low",
                          bool(has_qualifier(verdict.qualifier, ID_QUALIFIER_INC) and lowest),
                          verdict.multiple_individuals if not verdict.false_positive else None,
                          linked, continued, individual, n_individual, candidate,
-                         verdict.prefilled_from, verdict.prefill_edited, verdict.tags, verdict.notes.strip())
+                         verdict.prefilled_from, verdict.prefill_edited, verdict.tags, verdict.notes.strip(),
+                         determination, lineage)
 
     def _apply_list_filter(self, *_args: Any) -> None:
         """Apply the list filter and search, keeping the shown track selected."""
@@ -4219,6 +4244,30 @@ class ValidationPage(QWidget):
         _settings().setValue(_SETTINGS_KEY_SORT_REVERSE, False)
         self._set_sort_reverse_button(False)
         self._resort()
+
+    def _update_taxonomy_sort(self) -> bool:
+        """Enable the taxonomy sort where it is offered and return whether it is.
+
+        It needs a predicted rank; a blind session sorts only the determinations by taxon, not the prediction.
+        """
+        blind = self.session is not None and self.session.blind
+        available = (self.run is not None and bool(self.run.active_ranks)
+                     and not (blind and self.track_model.taxon_source == "pred"))
+        item = self.sort_combo.model().item(self.sort_combo.findData("taxonomy"))  # type: ignore[union-attr]
+        item.setEnabled(available)
+        return available
+
+    def _set_taxon_source(self, source: str) -> None:
+        """Show, sort and search the track list by prediction or determination, keeping the shown track selected."""
+        if source == self.track_model.taxon_source:
+            return
+        _settings().setValue(_SETTINGS_KEY_TAXON_SOURCE, source)
+        self.track_model.set_taxon_source(source, apply=False)
+        if not self._update_taxonomy_sort() and self.sort_combo.currentData() == "taxonomy":
+            # Blind session back to the prediction: its taxonomy order would reveal the hidden predictions
+            self.sort_combo.setCurrentIndex(self.sort_combo.findData(TrackListModel.DEFAULT_SORT))
+            return
+        self._apply_list_filter()
 
     def _on_sort_reverse_toggled(self, reverse: bool) -> None:
         """Reverse the direction of the sort, remember it and scroll to the top."""
