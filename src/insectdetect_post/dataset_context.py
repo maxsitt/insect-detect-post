@@ -17,11 +17,13 @@ Classes:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
+from itertools import combinations, permutations
 from pathlib import Path
 
 import polars as pl
@@ -40,10 +42,19 @@ from insectdetect_post.dataset_harmonizer import (
 # Create module-level logger
 logger = logging.getLogger(__name__)
 
-# Columns whose values must be non-null for a metadata row to be usable downstream
+# Columns a metadata file must have, else the file is refused (a missing 'device_id' falls back to the folder name)
+_REQUIRED_FILE_COLUMNS = ("timestamp", "track_id", "label")
+
+# Columns a metadata row must have values in, else the row is dropped (for image processing and classification)
 _REQUIRED_ROW_COLUMNS = (
     "device_id", "track_id", "label", "x_min", "y_min", "x_max", "y_max", "filename"
 )
+
+# Columns identifying a detection (finding files that share detections, sorting the merged metadata)
+_DETECTION_KEY_COLUMNS = ("device_id", "session_id", "timestamp", "track_id")
+
+# Unparseable timestamps a metadata file may have, else it is refused (a device crash leaves one incomplete line)
+_MAX_INVALID_TIMESTAMPS = 3
 
 
 def _sanitize_metadata_rows(df: pl.DataFrame, source_name: str) -> pl.DataFrame:
@@ -76,6 +87,110 @@ def _sanitize_metadata_rows(df: pl.DataFrame, source_name: str) -> pl.DataFrame:
         )
 
     return df
+
+
+def _screen_metadata_file(meta_path: Path) -> tuple[str | None, pl.DataFrame | None]:
+    """Check that a metadata file is unmodified camera output and read its detection keys.
+
+    Refuses a file that cannot be parsed, lacks a required column (e.g. saved with ';' as separator)
+    or has more unparseable timestamps than a device crash leaves.
+
+    Returns:
+        '(reason, None)' for a refused file, '(None, keys)' with the unique detection keys
+        (_DETECTION_KEY_COLUMNS, timestamp canonical, without 'device_id' if the file has none)
+        otherwise, '(None, None)' for an empty file.
+    """
+    try:
+        # Check the header first: a ';' file with decimal commas would fail the full read below
+        header = pl.read_csv(meta_path, n_rows=0).columns
+        col_map = {col: LEGACY_COLUMNS.get(col.lower(), col.lower()) for col in header}
+        missing = [col for col in _REQUIRED_FILE_COLUMNS if col not in col_map.values()]
+        if missing:
+            if len(header) == 1 and ";" in header[0]:
+                return "uses ';' as separator, it was probably saved by another program (e.g. Excel)", None
+            return f"lacks the required column(s) {', '.join(missing)}", None
+
+        df = pl.read_csv(meta_path, infer_schema=False)
+    except pl.exceptions.NoDataError:
+        return None, None
+    except (pl.exceptions.PolarsError, OSError) as e:
+        return f"cannot be read as CSV ({str(e).splitlines()[0]})", None
+
+    df = rename_legacy_columns(df.select(col for col in header if col_map[col] in _DETECTION_KEY_COLUMNS))
+    parsed_ts, _ = parse_timestamp_column("timestamp")
+    df = df.with_columns(parsed_ts.dt.strftime(CANONICAL_TIMESTAMP_FORMAT).alias("timestamp"))
+    n_invalid = df["timestamp"].null_count()
+    if n_invalid > _MAX_INVALID_TIMESTAMPS:
+        return (f"{n_invalid} of {len(df)} timestamps cannot be read, "
+                "the file was probably edited (e.g. in a spreadsheet program)"), None
+
+    if "session_id" not in df.columns:
+        df = df.with_columns(pl.lit(None, dtype=pl.String).alias("session_id"))
+    keys = df.select(c for c in _DETECTION_KEY_COLUMNS if c in df.columns).drop_nulls(["timestamp", "track_id"])
+    return None, keys.unique()
+
+
+def _find_duplicate_files(keys_by_file: dict[Path, pl.DataFrame], root_path: Path) -> dict[Path, str]:
+    """Find metadata files sharing detections with another file.
+
+    Of byte-identical files the first (in path order) is kept and the others are refused as copies.
+    A file sharing detections with two files that share none with each other is merged from other
+    files and refused alone. Files that still share detections are all refused: which one holds the
+    camera's data is unknown.
+
+    Args:
+        keys_by_file: Unique detection keys per metadata file, in path order.
+        root_path: Dataset root, the refusal reasons name files relative to it.
+
+    Returns:
+        Refusal reason per refused file.
+    """
+    if not keys_by_file:
+        return {}
+    paths = list(keys_by_file)
+    shared = (
+        pl.concat(keys.with_columns(pl.lit(i).alias("_file")) for i, keys in enumerate(keys_by_file.values()))
+        .group_by(_DETECTION_KEY_COLUMNS)
+        .agg(pl.col("_file"))
+        .filter(pl.col("_file").list.len() > 1)
+    )
+    # Number of shared detections per pair of files (both directions)
+    involved: dict[Path, dict[Path, int]] = {}
+    for files in shared["_file"].to_list():
+        for a, b in permutations(files, 2):
+            counts = involved.setdefault(paths[a], {})
+            counts[paths[b]] = counts.get(paths[b], 0) + 1
+
+    refused: dict[Path, str] = {}
+
+    def name(path: Path) -> str:
+        """Return the POSIX-style path relative to the dataset root."""
+        return path.relative_to(root_path).as_posix()
+
+    def partners(path: Path) -> dict[Path, int]:
+        """Return the files not yet refused that share detections with 'path'."""
+        return {other: n for other, n in involved[path].items() if other not in refused}
+
+    first_by_digest: dict[str, Path] = {}
+    for path in sorted(involved):
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest in first_by_digest:
+            refused[path] = f"identical copy of {name(first_by_digest[digest])}"
+        else:
+            first_by_digest[digest] = path
+
+    remaining = [p for p in sorted(involved) if p not in refused]
+    merged = {p: len(partners(p)) for p in remaining
+              if any(b not in involved[a] for a, b in combinations(partners(p), 2))}
+    for path, n_others in merged.items():
+        refused[path] = f"combines detections of {n_others} other metadata files, it was probably merged from them"
+
+    overlapping = {p: others for p in remaining if p not in refused and (others := partners(p))}
+    for path, others in overlapping.items():
+        shared_with = "; ".join(f"{n} with {name(other)}" for other, n in sorted(others.items()))
+        refused[path] = (f"shares detections with other metadata files ({shared_with}), "
+                         "remove the copy that is not the camera's original file")
+    return refused
 
 
 def _find_session_config_json(meta_path: Path) -> Path | None:
@@ -120,6 +235,7 @@ class DatasetContext:
     """Cached dataset information for efficient pipeline processing."""
     root_path: Path
     metadata_files: list[Path] = field(default_factory=list)
+    refused_metadata_files: dict[Path, str] = field(default_factory=dict)
     detection_frames: list[Path] = field(default_factory=list)
     timelapse_frames: list[Path] = field(default_factory=list)
     crop_frames: list[Path] = field(default_factory=list)
@@ -220,6 +336,7 @@ class DatasetContext:
 
         ctx.metadata_files.sort()
         ctx.crop_frames.sort()
+        ctx._screen_metadata_files()
 
         # Pre-index full frames by name for fast lookup
         full_frame_index: dict[str, Path] = {f.stem: f for f in all_full_frames}
@@ -252,6 +369,30 @@ class DatasetContext:
             f"{len(self.crop_frames)} crop frames, "
             f"{self.total_detections} detections)"
         )
+
+    def _screen_metadata_files(self) -> None:
+        """Move metadata files that are not unmodified camera output to refused_metadata_files.
+
+        Refused are files that cannot be parsed, lack a required column, have more unparseable
+        timestamps than a device crash leaves, or share detections with another file.
+        """
+        keys_by_file: dict[Path, pl.DataFrame] = {}
+        for meta_path in self.metadata_files:
+            reason, keys = _screen_metadata_file(meta_path)
+            if reason is not None:
+                self.refused_metadata_files[meta_path] = reason
+            elif keys is not None:
+                if "device_id" not in keys.columns:
+                    device_id = self._get_device_id_fallbacks()[meta_path]
+                    keys = keys.with_columns(pl.lit(device_id).alias("device_id"))
+                keys_by_file[meta_path] = keys.select(_DETECTION_KEY_COLUMNS)
+        self.refused_metadata_files.update(_find_duplicate_files(keys_by_file, self.root_path))
+
+        for meta_path, reason in sorted(self.refused_metadata_files.items()):
+            logger.warning(
+                "Refused metadata file %s: %s", meta_path.relative_to(self.root_path).as_posix(), reason
+            )
+        self.metadata_files = [p for p in self.metadata_files if p not in self.refused_metadata_files]
 
     def _get_device_id_fallbacks(self) -> dict[Path, str]:
         """Map each metadata.csv path to a device_id, for files with none of their own.
@@ -299,7 +440,10 @@ class DatasetContext:
         """
         if not self.metadata_files:
             self.timelapse_frames.extend(all_full_frames)
-            logger.warning("No metadata files found")
+            if self.refused_metadata_files:
+                logger.warning("No usable metadata files (%d refused)", len(self.refused_metadata_files))
+            else:
+                logger.warning("No metadata files found")
             logger.info("Categorized all %d frames as timelapse frames", len(all_full_frames))
             return
 
@@ -598,8 +742,7 @@ class DatasetContext:
                         cols = [c for c in df_concat.columns if c != SETTING_COLUMN]
                         idx = cols.index("session_id") + 1 if "session_id" in cols else 0
                         df_concat = df_concat.select([*cols[:idx], SETTING_COLUMN, *cols[idx:]])
-                    sort_cols = [c for c in ["device_id", "session_id", "timestamp", "track_id"]
-                                 if c in df_concat.columns]
+                    sort_cols = [c for c in _DETECTION_KEY_COLUMNS if c in df_concat.columns]
                     self._metadata_df = df_concat.sort(sort_cols, maintain_order=True) if sort_cols else df_concat
                     logger.info(
                         "Loaded merged metadata: %d rows from %d of %d files",
@@ -632,7 +775,8 @@ class DatasetContext:
             # Basic stats
             if num_cameras > 1:
                 lines.append(f"  Camera traps: {num_cameras}")
-            lines.append(f"  Total number of metadata files: {self.num_metadata_files}")
+            refused = f" ({len(self.refused_metadata_files)} refused)" if self.refused_metadata_files else ""
+            lines.append(f"  Total number of metadata files: {self.num_metadata_files}{refused}")
             lines.append(f"  Total number of detection frames: {self.total_detection_frames}")
             if self.total_timelapse_frames > 0:
                 lines.append(f"  Total number of timelapse frames: {self.total_timelapse_frames}")
@@ -680,7 +824,16 @@ class DatasetContext:
                 lines.append(f"  Total number of timelapse frames: {self.total_timelapse_frames}")
             else:
                 lines.append("  No image files found!")
-            lines.append("  No metadata files found!")
+            if self.refused_metadata_files:
+                lines.append(f"  No usable metadata files ({len(self.refused_metadata_files)} refused)!")
+            else:
+                lines.append("  No metadata files found!")
+
+        if self.refused_metadata_files:
+            lines.append("-" * 60)
+            lines.append("Refused metadata files (not processed):")
+            for meta_path, reason in sorted(self.refused_metadata_files.items()):
+                lines.append(f"  {meta_path.relative_to(self.root_path).as_posix()}: {reason}")
 
         lines.append("=" * 60)
         return "\n".join(lines)

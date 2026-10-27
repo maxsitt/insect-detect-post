@@ -1226,14 +1226,16 @@ class ConfigWidget(QWidget):
             logger.warning("No metadata found - metadata processing disabled")
 
         # Update progress label
+        n_refused = len(context.refused_metadata_files)
+        refused = f", {n_refused} metadata file(s) refused (see log)" if n_refused else ""
         if context.has_metadata:
             frame_parts = [f"{context.total_detection_frames} detection frames"]
             if context.num_crop_frames > 0:
                 frame_parts.append(f"{context.num_crop_frames} crops")
-            self.status_updated.emit("Inspection complete: " + ", ".join(frame_parts))
+            self.status_updated.emit("Inspection complete: " + ", ".join(frame_parts) + refused)
         else:
             self.status_updated.emit(
-                f"Inspection complete: {context.total_timelapse_frames} timelapse frames (no metadata)"
+                f"Inspection complete: {context.total_timelapse_frames} timelapse frames (no metadata){refused}"
             )
 
         self.inspection_active_changed.emit(False)
