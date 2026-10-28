@@ -732,6 +732,7 @@ class SetupPage(QWidget):
         self._prefill_loaded: dict[str, ValidationSession] = {}
         self._prefill_selection: tuple[tuple[str, ...], VerdictSelection] | None = None
         self._preview_keys: list[TrackKey] = []
+        self._start_problem = ""
         self._summary_error: str | None = None
         self._thread: QThread | None = None
         self._worker: RunLoadWorker | None = None
@@ -1037,7 +1038,9 @@ class SetupPage(QWidget):
         self.start_btn.setEnabled(False)
         self.start_btn.clicked.connect(self._start_new)
         buttons.addWidget(self.start_btn)
-        buttons.addStretch()
+        self.start_hint = QLabel("")
+        self.start_hint.setWordWrap(True)
+        buttons.addWidget(self.start_hint, 1)
         if self.standalone:
             self.update_btn = UpdateButton(self._restart_args)
             self.update_btn.install_started.connect(self._on_install_start)
@@ -1103,7 +1106,7 @@ class SetupPage(QWidget):
         self.run = None
         self._setting_counts = setting_counts(pl.DataFrame())
         self.sessions_table.setRowCount(0)
-        self.start_btn.setEnabled(False)
+        self._update_start_state()
         self._set_options_enabled(False)
         if path is None:
             self._cleanup_thread()  # stop a search for the previous directory
@@ -1703,7 +1706,8 @@ class SetupPage(QWidget):
         )
 
     def _sampling_config(self) -> SamplingConfig | None:
-        """Return the sampling parameters from the form. None (with a hint) if invalid."""
+        """Return the sampling parameters from the form. None if invalid, with the reason in '_start_problem'."""
+        self._start_problem = ""
         values = {**self.filter_form.values(), **self.sampling_form.values()}
         cfg = SamplingConfig(seed=int(values.get("seed", VALIDATION_SEED_DEFAULT)))
         if values.get("taxa_rank_enabled"):
@@ -1719,8 +1723,7 @@ class SetupPage(QWidget):
         for low, high, name in ((cfg.min_duration_s, cfg.max_duration_s, "track duration"),
                                 (cfg.min_prob_weighted, cfg.max_prob_weighted, "weighted probability")):
             if low is not None and high is not None and low > high:
-                self.preview_label.setText(f"<span style='color:{_error_color()}'>The min. {name} "
-                                           f"must not be greater than the max. {name}.</span>")
+                self._start_problem = f"The min. {name} must not be greater than the max. {name}."
                 return None
         if values.get("stratum_rank_enabled"):
             cfg.stratum_rank = values.get("stratum_rank")
@@ -1729,7 +1732,7 @@ class SetupPage(QWidget):
             try:
                 cfg.prob_edges = parse_prob_edges(str(values.get("prob_edges", "")))
             except ValueError as e:
-                self.preview_label.setText(f"<span style='color:{_error_color()}'>{e}</span>")
+                self._start_problem = f"{e}."
                 return None
         if values.get("max_per_stratum_enabled"):
             cfg.max_per_stratum = int(values.get("max_per_stratum", VALIDATION_MAX_PER_STRATUM_DEFAULT))
@@ -1753,7 +1756,8 @@ class SetupPage(QWidget):
         cfg = self._sampling_config()
         if cfg is None:
             self.preview_table.setRowCount(0)
-            self.start_btn.setEnabled(False)
+            self.preview_label.setText("No preview: the settings are invalid.")
+            self._update_start_state()
             return
         sampled, summary = self._sample(cfg)
         sampled_counts = dict(sampled.group_by("stratum_id").len().iter_rows()) if not sampled.is_empty() else {}
@@ -1800,11 +1804,10 @@ class SetupPage(QWidget):
         else:
             excluded_note = ""
         if not sampled.height:
-            self.preview_label.setText(
-                f"<span style='color:{_error_color()}'>No stratum reaches the minimum of "
-                f"{cfg.min_per_stratum} tracks - nothing to validate.</span>" if excluded else
-                f"<span style='color:{_error_color()}'>The current selection contains no tracks.</span>"
-            )
+            self.preview_label.setText(f"<b>0</b> of the {n_selected} selected tracks will be validated."
+                                       + excluded_note)
+            self._start_problem = (f"No stratum reaches the minimum of {cfg.min_per_stratum} tracks - "
+                                   "nothing to validate." if excluded else "The current selection contains no tracks.")
         else:
             self.preview_label.setText(
                 (f"No subsample: all <b>{n_selected}</b> selected tracks will be validated."
@@ -1814,18 +1817,24 @@ class SetupPage(QWidget):
             )
         self._preview_keys = [tuple(row) for row in sampled.select(TRACK_KEY_COLUMNS).iter_rows()]
         self._update_prefill_count()
-        self._update_start_state(sampled.height)
+        self._update_start_state()
 
     def _validator_name(self) -> str:
         """Return the validator name as typed (value() only updates when editing finishes)."""
         return self.validator_param.text.text().strip()  # type: ignore[union-attr]
 
-    def _update_start_state(self, n_sampled: int | None = None) -> None:
-        """Enable the start button with a run, a validator and a non-empty sample."""
-        ready = self.run is not None and bool(self._validator_name())
-        if ready and n_sampled is not None:
-            ready = n_sampled > 0
-        self.start_btn.setEnabled(ready)
+    def _update_start_state(self) -> None:
+        """Enable the start button with a run, valid settings, a non-empty sample and a validator, else say why."""
+        if self.run is None:
+            hint = ""
+        elif self._start_problem:
+            hint = f"<span style='color:{_error_color()}'>{html.escape(self._start_problem)}</span>"
+        elif not self._validator_name():
+            hint = "Enter a validator name to start."
+        else:
+            hint = ""
+        self.start_btn.setEnabled(self.run is not None and not hint)
+        self.start_hint.setText(hint)
 
     def _refresh_prefill_sources(self) -> None:
         """List the sessions the new session can be pre-filled from; hide the row without any."""
