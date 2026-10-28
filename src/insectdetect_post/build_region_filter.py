@@ -43,7 +43,7 @@ import time
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import polars as pl
 import requests
@@ -77,6 +77,25 @@ if PHYLUM_FILTER is not None:
             "PHYLUM_FILTER '%s' has no entry in PHYLUM_TAXON_KEYS -- occurrence facet "
             "queries will not be restricted by phylum.", PHYLUM_FILTER
         )
+
+# Occurrence records that count towards a region filter (absences and fossils are excluded)
+# Descriptions: https://gbif.github.io/gbif-api/apidocs/org/gbif/api/vocabulary/BasisOfRecord.html
+OCCURRENCE_FILTERS: dict[str, Any] = {
+    "occurrenceStatus": "PRESENT",
+    "basisOfRecord": [
+        "PRESERVED_SPECIMEN",
+        # "FOSSIL_SPECIMEN",  # not evidence of present-day occurrence
+        "LIVING_SPECIMEN",
+        "OBSERVATION",
+        "HUMAN_OBSERVATION",
+        "MACHINE_OBSERVATION",
+        "MATERIAL_SAMPLE",
+        # "LITERATURE",  # deprecated, replaced by OCCURRENCE
+        "MATERIAL_CITATION",
+        "OCCURRENCE",
+        # "UNKNOWN",  # deprecated, replaced by OCCURRENCE
+    ],
+}
 
 # Kinds of region, named after the GBIF occurrence search parameter each one is sent as
 RegionType = Literal["country", "continent"]
@@ -183,9 +202,9 @@ def _cache_stale_reason(meta_path: Path) -> str | None:
     """Return why a cached region filter should be rebuilt, or None if it is still valid.
 
     The cache is keyed by region and min_occurrence_count through its filename, so the
-    remaining input that can change underneath it is the species mapping. A cache
-    written before provenance was recorded has no way to prove which mapping produced it
-    and is therefore treated as stale once.
+    remaining inputs that can change underneath it are OCCURRENCE_FILTERS and the species
+    mapping. A cache written before provenance was recorded has no way to prove which
+    mapping produced it and is therefore treated as stale once.
     """
     if not meta_path.exists():
         return "it has no provenance record, so the mapping that produced it is unknown"
@@ -194,6 +213,9 @@ def _cache_stale_reason(meta_path: Path) -> str | None:
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return f"its provenance record '{meta_path.name}' could not be read"
+
+    if meta.get("gbif_occurrence_filters") != OCCURRENCE_FILTERS:
+        return "it was built with different GBIF occurrence filters"
 
     if not SPECIES_MAPPING_CSV.exists():
         logger.debug("Species mapping is not present locally, keeping the cached region filter.")
@@ -236,6 +258,7 @@ def _write_cache_metadata(
             "phylum_filter": _scope,
             "min_occurrence_count": min_occurrence_count,
             "gbif_checklist_key": GBIF_CHECKLIST_KEY,
+            "gbif_occurrence_filters": OCCURRENCE_FILTERS,
             "mapping_sha256": mapping_sha256,
             "mapping_col_release": mapping_col_release,
             "gbif_col_release": gbif_col_release,
@@ -267,8 +290,8 @@ def _fetch_facet(region_type: RegionType, region: str, min_occurrence_count: int
     """Fetch the complete GBIF 'speciesKey' occurrence facet for a region in one request.
 
     Retries transient failures (429/5xx or network errors) up to MAX_RETRIES times.
-    A 4xx error other than 429 is treated as an invalid region code and raised
-    immediately as a ValueError, not retried.
+    A 4xx error other than 429 is most likely an invalid region code and is raised
+    immediately as a ValueError with GBIF's reason, not retried.
     """
     last_error: Exception | None = None
     for attempt in range(MAX_RETRIES):
@@ -280,15 +303,18 @@ def _fetch_facet(region_type: RegionType, region: str, min_occurrence_count: int
                 speciesKey_facetLimit=FACET_LIMIT, speciesKey_facetOffset=0,
                 facetMincount=min_occurrence_count,
                 timeout=REQUEST_TIMEOUT_S,
+                **OCCURRENCE_FILTERS,
             )
         except HTTPError as e:
-            status = e.response.status_code if e.response is not None else None
-            if status is not None and 400 <= status < 500 and status != 429:
+            response = e.response
+            if response is not None and 400 <= response.status_code < 500 and response.status_code != 429:
                 expected = ("a valid ISO 3166-1 alpha-2 code" if region_type == "country"
                             else "one of GBIF's continents")
+                reason = response.text.strip()[:200]
                 raise ValueError(
-                    f"GBIF rejected {region_type} '{region}' (HTTP {status}). "
-                    f"Verify it is {expected}."
+                    f"GBIF rejected {region_type} '{region}' "
+                    f"(HTTP {response.status_code}{': ' + reason if reason else ''}). "
+                    f"Verify that it is {expected} and that OCCURRENCE_FILTERS only holds values GBIF accepts."
                 ) from e
             last_error = e
         except RequestException as e:
@@ -305,7 +331,8 @@ def get_region_species_counts(region_type: RegionType, region: str, min_occurren
     """Fetch all GBIF species keys with occurrence records in a region.
 
     Requests GBIF's complete 'speciesKey' occurrence facet in one call, restricted server-side
-    to PHYLUM_TAXON_KEY if set. The facet holds the accepted species of each record's lineage, so
+    to PHYLUM_TAXON_KEY if set and to the records selected by OCCURRENCE_FILTERS (no absences,
+    no fossils). The facet holds the accepted species of each record's lineage, so
     records identified to a subspecies or by a synonym count for their accepted species. The
     mapping's keys are accepted species keys for that reason: a synonym or subspecies key would
     never appear in this facet (unlike in the 'taxonKey' facet, which holds every key of a lineage).
@@ -352,11 +379,11 @@ def build_region_filter_csv(
     pybioclip, followed by 'gbif_species', 'gbif_species_key' and 'gbif_occurrence_count'. It is
     kept lean on purpose: further details of a species are in the species mapping, joined on
     'gbif_species_key'. A JSON file of the same name records which mapping and settings produced
-    it; the cache is rebuilt automatically if the species mapping has changed since. If
-    rebuilding fails while an existing cache is present (typically an offline run), the outdated
-    cache is used and a warning is logged.
+    it; the cache is rebuilt automatically if the species mapping or OCCURRENCE_FILTERS have
+    changed since. If rebuilding fails while an existing cache is present (typically an offline run),
+    the outdated cache is used and a warning is logged.
 
-    'gbif_occurrence_count' is the number of records GBIF holds for the species in that region,
+    'gbif_occurrence_count' is the number of species records in that region that pass OCCURRENCE_FILTERS,
     so TOL species that are synonyms of each other share a key and repeat the same count.
 
     Args:

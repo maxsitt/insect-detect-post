@@ -371,6 +371,7 @@ A species is included in a region's filter if GBIF has at least 3 occurrence rec
 that region (default of `MIN_OCCURRENCE_COUNT` in `constants.py`). With several countries or
 continents selected, this applies to each region on its own, not to their sum. Rare or rarely
 recorded species can therefore be missing from a filter even if they occur in the region.
+Records of absences (looked for, but not found) and fossil specimens are not counted.
 
 Tree of Life species are matched to GBIF species keys of the
 [Catalogue of Life](https://www.catalogueoflife.org/) Extended Release (COL XR), the taxonomy
