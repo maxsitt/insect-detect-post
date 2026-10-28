@@ -536,7 +536,8 @@ but such tracks are left out of the accuracy statistics.</td></tr>
 it on the track, <b>Alt+1</b> to <b>Alt+{_TAG_SHORTCUTS}</b> toggle the first {_TAG_SHORTCUTS} tags. Right-click a
 tag to move it (this changes its number) or to delete it. The tags belong to the session: a new session of the run
 starts with the tags of its last session, so everyone validating it uses the same ones. Tracks marked as <i>Not an
-arthropod</i> keep their tags.</td></tr>
+arthropod</i> keep their tags. For a morphospecies, determine the genus, set the species to <i>indet.</i> and add
+a tag such as &ldquo;morph_black&rdquo;: a made-up species name would count as a wrong prediction.</td></tr>
 <tr><td><b>Notes</b></td>
 <td>One short line (at most {VALIDATION_NOTES_MAX_CHARS} characters) for what the fields do not cover,
 e.g. &ldquo;mating pair&rdquo; or &ldquo;pollen on the legs&rdquo;.</td></tr>
