@@ -558,7 +558,8 @@ class ConfigWidget(QWidget):
             default=_DEFAULTS.metadata.filter_tracks.max_dur_s,
             param_type="float", decimals=1,
             slider_max=6000,
-            tooltip="Maximum allowed tracking duration (seconds) to retain a tracking ID"
+            tooltip="Maximum allowed tracking duration (seconds) to retain a tracking ID - "
+                    "'0' keeps only tracks with a single crop"
         ))
 
         lo, hi = _get_constraints("metadata.filter_tracks.min_det_conf_mean")

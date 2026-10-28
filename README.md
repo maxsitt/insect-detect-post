@@ -320,7 +320,7 @@ numeric values are automatically clamped to their allowed bounds and a warning i
 logged. `bioclip` and `ultralytics` are mutually exclusive (enable only one
 classifier), as are `sort_crops` and `sort_tracks`. Crop sorting and metadata processing
 both require classification results, so one of the two classifiers must be enabled.
-`metadata.filter_tracks.min_dur_s` must be less than `max_dur_s`.
+`metadata.filter_tracks.min_dur_s` must not be greater than `max_dur_s`.
 
 ### General
 
@@ -409,7 +409,7 @@ drop whole tracking IDs.
 | `metadata.filter_crops.min_pred_prob`           | `float` (0-1)     | `0.1`    | Minimum probability of the crop's top-1 prediction required to keep a crop (`0` turns it off).                  |
 | `metadata.filter_tracks.enabled`                | `bool`            | `false`  | Filter tracking IDs based on tracking duration, mean detection confidence and weighted prediction probability.  |
 | `metadata.filter_tracks.min_dur_s`              | `float` (0-600)   | `2.0`    | Minimum total tracking duration (seconds, one decimal place) required to keep a tracking ID (`0` turns it off). |
-| `metadata.filter_tracks.max_dur_s`              | `float` (1-21600) | `3600.0` | Maximum total tracking duration (seconds, one decimal place) allowed to keep a tracking ID.                     |
+| `metadata.filter_tracks.max_dur_s`              | `float` (0-21600) | `3600.0` | Maximum total tracking duration (seconds, one decimal place) to keep a tracking ID (`0`: single crop only).     |
 | `metadata.filter_tracks.min_det_conf_mean`      | `float` (0-1)     | `0.2`    | Minimum mean detection confidence required to keep a tracking ID (`0` turns it off).                            |
 | `metadata.filter_tracks.min_pred_prob_weighted` | `float` (0-1)     | `0.2`    | Minimum weighted mean probability of the final prediction required to keep a tracking ID (`0` turns it off).    |
 | `metadata.estimate_size.enabled`                | `bool`            | `false`  | Estimate physical size based on bounding box dimensions and frame size (millimeters).                           |

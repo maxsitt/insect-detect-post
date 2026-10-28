@@ -1641,7 +1641,8 @@ class SetupPage(QWidget):
         common = " (from the first to the last kept crop); tracks without a duration are excluded."
         for check, param, text in (
             (self.min_duration_check, self.min_duration_param, "Only validate tracks at least this long"),
-            (self.max_duration_check, self.max_duration_param, "Only validate tracks at most this long"),
+            (self.max_duration_check, self.max_duration_param,
+             "Only validate tracks at most this long ('0': tracks with a single crop)"),
         ):
             param.setToolTip(text + common + run_note)
             check.setToolTip(param.toolTip())
@@ -1677,9 +1678,9 @@ class SetupPage(QWidget):
             cfg.setting_filter_values = list(values.get("setting_values") or ())
         cfg.min_duration_s, cfg.max_duration_s = self._duration_filter()
         if cfg.min_duration_s is not None and cfg.max_duration_s is not None \
-                and cfg.min_duration_s >= cfg.max_duration_s:
+                and cfg.min_duration_s > cfg.max_duration_s:
             self.preview_label.setText(f"<span style='color:{_error_color()}'>The min. track duration "
-                                       "must be less than the max. track duration.</span>")
+                                       "must not be greater than the max. track duration.</span>")
             return None
         if values.get("stratum_rank_enabled"):
             cfg.stratum_rank = values.get("stratum_rank")
@@ -5986,6 +5987,8 @@ def _fmt_gap(gap_s: float) -> str:
 
 def _fmt_duration(low: float | None, high: float | None) -> str:
     """Return a duration range as a condition, e.g. 'duration 2-3600 s' (empty without bounds)."""
+    if low is not None and low == high:
+        return f"duration {low:g} s"
     if low is not None and high is not None:
         return f"duration {low:g}-{high:g} s"
     if low is not None:

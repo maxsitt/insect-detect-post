@@ -216,7 +216,7 @@ class FilterTrackingConfig(BaseModel):
     """Filter tracking IDs based on tracking duration, mean detection confidence and weighted probability."""
     enabled: bool = False
     min_dur_s: float = Field(default=2.0, ge=0.0, le=600.0, multiple_of=0.1)
-    max_dur_s: float = Field(default=3600.0, ge=1.0, le=21600.0, multiple_of=0.1)
+    max_dur_s: float = Field(default=3600.0, ge=0.0, le=21600.0, multiple_of=0.1)
     min_det_conf_mean: float = Field(default=0.2, ge=0.0, le=1.0)
     min_pred_prob_weighted: float = Field(default=0.2, ge=0.0, le=1.0)
 
@@ -227,12 +227,12 @@ class FilterTrackingConfig(BaseModel):
         return round(value, 1)
 
     @model_validator(mode="after")
-    def min_must_be_less_than_max(self) -> FilterTrackingConfig:
-        """Ensure min_dur_s is strictly less than max_dur_s."""
-        if self.min_dur_s >= self.max_dur_s:
+    def min_must_not_exceed_max(self) -> FilterTrackingConfig:
+        """Ensure min_dur_s is not greater than max_dur_s (equal bounds keep tracks of exactly that duration)."""
+        if self.min_dur_s > self.max_dur_s:
             raise ValueError(
                 f"metadata.filter_tracks.min_dur_s ({self.min_dur_s}) "
-                f"must be less than max_dur_s ({self.max_dur_s})"
+                f"must not be greater than max_dur_s ({self.max_dur_s})"
             )
         return self
 
