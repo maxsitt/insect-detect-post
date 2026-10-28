@@ -68,6 +68,7 @@ from insectdetect_post.validation_sampling import (
     assign_strata,
     filter_duration,
     filter_periods,
+    filter_prob,
     filter_settings,
     filter_taxa,
     small_strata,
@@ -206,6 +207,8 @@ class SamplingConfig:
     setting_filter_values: list[str] = field(default_factory=list)
     min_duration_s: float | None = None
     max_duration_s: float | None = None
+    min_prob_weighted: float | None = None
+    max_prob_weighted: float | None = None
     stratum_rank: str | None = None
     prob_edges: list[float] | None = None
     stratum_setting: bool = False
@@ -223,11 +226,12 @@ class SamplingConfig:
         return cls(**data)
 
     def select_tracks(self, tracks: pl.DataFrame) -> pl.DataFrame:
-        """Return the tracks selected by the taxa, period, setting and duration filters."""
+        """Return the tracks selected by the taxa, period, setting, duration and probability filters."""
         tracks = filter_taxa(tracks, self.taxon_filter_rank, self.taxon_filter_values or None)
         tracks = filter_periods(tracks, self.period_filter_granularity, self.period_filter_values or None)
         tracks = filter_settings(tracks, self.setting_filter_values or None)
-        return filter_duration(tracks, self.min_duration_s, self.max_duration_s)
+        tracks = filter_duration(tracks, self.min_duration_s, self.max_duration_s)
+        return filter_prob(tracks, self.min_prob_weighted, self.max_prob_weighted)
 
 
 @dataclass

@@ -15,6 +15,7 @@ Functions:
     filter_periods(): Keep tracks that started in selected periods.
     filter_settings(): Keep tracks of selected camera settings.
     filter_duration(): Keep tracks within a duration range.
+    filter_prob(): Keep tracks within a weighted-probability range.
     period_counts(): Track counts per period of the start time.
     setting_counts(): Track counts per camera setting.
     setting_strata_available(): Whether a run has at least two setting groups.
@@ -84,14 +85,25 @@ def filter_settings(tracks: pl.DataFrame, settings: list[str] | None) -> pl.Data
 
 
 def filter_duration(tracks: pl.DataFrame, min_s: float | None, max_s: float | None) -> pl.DataFrame:
-    """Keep tracks whose duration lies within 'min_s' and 'max_s' (inclusive; tracks without one are dropped)."""
-    if (min_s is None and max_s is None) or "duration_s" not in tracks.columns:
+    """Keep tracks whose duration lies within 'min_s' and 'max_s'."""
+    return _filter_range(tracks, "duration_s", min_s, max_s)
+
+
+def filter_prob(tracks: pl.DataFrame, min_prob: float | None, max_prob: float | None) -> pl.DataFrame:
+    """Keep tracks whose weighted probability lies within 'min_prob' and 'max_prob'."""
+    return _filter_range(tracks, "pred_prob_weighted", min_prob, max_prob)
+
+
+def _filter_range(tracks: pl.DataFrame, column: str, low: float | None, high: float | None) -> pl.DataFrame:
+    """Keep tracks whose 'column' lies within 'low' and 'high' (inclusive; tracks without a value are dropped)."""
+    if (low is None and high is None) or column not in tracks.columns:
         return tracks
-    keep = pl.col("duration_s").is_not_null()
-    if min_s is not None:
-        keep &= pl.col("duration_s") >= min_s
-    if max_s is not None:
-        keep &= pl.col("duration_s") <= max_s
+    value = pl.col(column).cast(pl.Float64, strict=False).fill_nan(None)
+    keep = value.is_not_null()
+    if low is not None:
+        keep &= value >= low
+    if high is not None:
+        keep &= value <= high
     return tracks.filter(keep)
 
 

@@ -186,6 +186,7 @@ from insectdetect_post.validation_sampling import (
     available_strata_ranks,
     filter_duration,
     filter_periods,
+    filter_prob,
     filter_settings,
     filter_taxa,
     parse_prob_edges,
@@ -866,10 +867,20 @@ class SetupPage(QWidget):
             param_type="float", slider_max=6000, decimals=1))
         self.filter_form.add_parameter(self.max_duration_param, checkable=True)
         self.max_duration_check = self.filter_form.widgets()["max_duration_s_enabled"]
-        field_width = max(p.line.sizeHint().width() for p in (self.min_duration_param, self.max_duration_param))
-        for number_param in (self.min_duration_param, self.max_duration_param):
+        self.min_prob_param = cast(FloatParameter, create_num_param(
+            "min_prob_weighted", "Min. weighted probability", 0, 1, _TRACK_FILTER_DEFAULTS.min_pred_prob_weighted,
+            param_type="float", decimals=2))
+        self.filter_form.add_parameter(self.min_prob_param, checkable=True)
+        self.min_prob_check = self.filter_form.widgets()["min_prob_weighted_enabled"]
+        self.max_prob_param = cast(FloatParameter, create_num_param(
+            "max_prob_weighted", "Max. weighted probability", 0, 1, 1.0, param_type="float", decimals=2))
+        self.filter_form.add_parameter(self.max_prob_param, checkable=True)
+        self.max_prob_check = self.filter_form.widgets()["max_prob_weighted_enabled"]
+        range_params = (self.min_duration_param, self.max_duration_param, self.min_prob_param, self.max_prob_param)
+        field_width = max(p.line.sizeHint().width() for p in range_params)
+        for number_param in range_params:
             number_param.line.setFixedWidth(field_width)
-        self._set_duration_tooltips(None)
+        self._set_range_tooltips(None)
         self.settings_values_param = MultiComboParameter[str]("setting_values")
         self.settings_values_param.combo.set_maximum_display_items(0)  # show every selected entry
         self.settings_values_param.set_label("Filter camera settings")
@@ -1056,7 +1067,8 @@ class SetupPage(QWidget):
                        self.period_granularity_param, self.period_values_param, self.period_filter_check,
                        self.settings_values_param, self.settings_filter_check,
                        self.min_duration_param, self.min_duration_check,
-                       self.max_duration_param, self.max_duration_check):
+                       self.max_duration_param, self.max_duration_check,
+                       self.min_prob_param, self.min_prob_check, self.max_prob_param, self.max_prob_check):
             widget.value_changed.connect(lambda _: self._refresh_filter_lists())
         self._set_options_enabled(False)
 
@@ -1263,7 +1275,7 @@ class SetupPage(QWidget):
         if "min_pred_prob" in filters:
             crop_conditions.append(f"prediction probability ≥ {filters['min_pred_prob']:g}")
         track_conditions = []
-        if duration := _fmt_duration(filters.get("min_dur_s"), filters.get("max_dur_s")):
+        if duration := _fmt_range("duration", filters.get("min_dur_s"), filters.get("max_dur_s"), " s"):
             track_conditions.append(duration)
         if "min_det_conf_mean" in filters:
             track_conditions.append(f"mean detection confidence ≥ {filters['min_det_conf_mean']:g}")
@@ -1353,7 +1365,9 @@ class SetupPage(QWidget):
                                              and self.settings_filter_check.isEnabled())
         self.settings_values_param.set_value(list(sampling.setting_filter_values))
         for check, param, value in ((self.min_duration_check, self.min_duration_param, sampling.min_duration_s),
-                                    (self.max_duration_check, self.max_duration_param, sampling.max_duration_s)):
+                                    (self.max_duration_check, self.max_duration_param, sampling.max_duration_s),
+                                    (self.min_prob_check, self.min_prob_param, sampling.min_prob_weighted),
+                                    (self.max_prob_check, self.max_prob_param, sampling.max_prob_weighted)):
             check.set_value(value is not None)
             if value is not None:
                 param.set_value(float(value))
@@ -1554,9 +1568,9 @@ class SetupPage(QWidget):
         self.period_values_param.set_placeholder(
             "Select periods..." if periods_available else
             "all tracks started on one day" if days.height else "no track start times in this run")
-        # Duration filter: starts from the run's own duration bounds, else the processing defaults
+        # Duration and probability filters: start from the run's own bounds, else the processing defaults
         run_filters = self.run.run_filters() or {}
-        self._set_duration_tooltips(run_filters)
+        self._set_range_tooltips(run_filters)
         for check, param, key in ((self.min_duration_check, self.min_duration_param, "min_dur_s"),
                                   (self.max_duration_check, self.max_duration_param, "max_dur_s")):
             check.set_value(False)
@@ -1564,6 +1578,11 @@ class SetupPage(QWidget):
             run_value = run_filters.get(key)
             start = getattr(_TRACK_FILTER_DEFAULTS, key) if run_value is None else run_value
             param.set_value(min(max(round(float(start), 1), lo), hi))
+        self.min_prob_check.set_value(False)
+        self.min_prob_param.set_value(run_filters.get("min_pred_prob_weighted",
+                                                      _TRACK_FILTER_DEFAULTS.min_pred_prob_weighted))
+        self.max_prob_check.set_value(False)
+        self.max_prob_param.set_value(1.0)
         self.preview_table.setColumnHidden(0, not settings_available)
         self._updating = False
         self._refresh_filter_lists()
@@ -1577,8 +1596,8 @@ class SetupPage(QWidget):
             return
         self._updating = True  # no re-entry from the lists' own signals
         try:
-            by_duration = filter_duration(self.run.tracks, *self._duration_filter())
-            by_taxa = filter_taxa(by_duration, *self._taxa_filter())
+            by_range = self._range_filtered()
+            by_taxa = filter_taxa(by_range, *self._taxa_filter())
             period_filter = self._period_filter()
             selected_settings = self._setting_filter() or None
             rank = self.taxa_rank_param.value()
@@ -1586,7 +1605,7 @@ class SetupPage(QWidget):
             if not rank or counts is None or counts.is_empty():
                 self.taxa_values_param.set_items([])
             else:
-                selected = filter_settings(filter_periods(by_duration, *period_filter), selected_settings)
+                selected = filter_settings(filter_periods(by_range, *period_filter), selected_settings)
                 n_taxon = dict(self.run.taxon_counts(rank, selected).iter_rows())
                 taxa = sorted(counts["taxon"].to_list(), key=lambda taxon: (-n_taxon.get(taxon, 0), taxon))
                 self.taxa_values_param.set_items({f"{taxon} ({n_taxon.get(taxon, 0)})": taxon for taxon in taxa})
@@ -1627,8 +1646,18 @@ class SetupPage(QWidget):
         return (round(self.min_duration_param.value(), 1) if self.min_duration_check.value() else None,
                 round(self.max_duration_param.value(), 1) if self.max_duration_check.value() else None)
 
-    def _set_duration_tooltips(self, run_filters: dict[str, float] | None) -> None:
-        """Explain the duration bounds, with the run's own duration filter if it applied one."""
+    def _prob_filter(self) -> tuple[float | None, float | None]:
+        """Return '(min, max)' of the probability filter (two decimal places), None for a bound that is off."""
+        return (round(self.min_prob_param.value(), 2) if self.min_prob_check.value() else None,
+                round(self.max_prob_param.value(), 2) if self.max_prob_check.value() else None)
+
+    def _range_filtered(self) -> pl.DataFrame:
+        """Return the run's tracks within the duration and probability ranges."""
+        assert self.run is not None
+        return filter_prob(filter_duration(self.run.tracks, *self._duration_filter()), *self._prob_filter())
+
+    def _set_range_tooltips(self, run_filters: dict[str, float] | None) -> None:
+        """Explain the duration and probability bounds, with the run's own track filter if it applied one."""
         low, high = (run_filters or {}).get("min_dur_s"), (run_filters or {}).get("max_dur_s")
         if low is not None and high is not None:
             run_note = f" The run already kept only tracks of {low:g}-{high:g} s."
@@ -1646,12 +1675,20 @@ class SetupPage(QWidget):
         ):
             param.setToolTip(text + common + run_note)
             check.setToolTip(param.toolTip())
+        low_prob = (run_filters or {}).get("min_pred_prob_weighted")
+        run_note = f" The run already kept only tracks with ≥ {low_prob:g}." if low_prob is not None else ""
+        common = "; tracks without one are excluded. The statistics then describe only this probability range."
+        for check, param, text in (
+            (self.min_prob_check, self.min_prob_param, "Only validate tracks with at least this weighted probability"),
+            (self.max_prob_check, self.max_prob_param, "Only validate tracks with at most this weighted probability"),
+        ):
+            param.setToolTip(text + common + run_note)
+            check.setToolTip(param.toolTip())
 
     def _sync_setting_strata(self) -> None:
         """Offer setting strata only while the selected tracks fall into at least two setting groups."""
         assert self.run is not None
-        by_duration = filter_duration(self.run.tracks, *self._duration_filter())
-        selected = filter_periods(filter_taxa(by_duration, *self._taxa_filter()), *self._period_filter())
+        selected = filter_periods(filter_taxa(self._range_filtered(), *self._taxa_filter()), *self._period_filter())
         counts = setting_counts(filter_settings(selected, self._setting_filter() or None))
         available = counts.height >= 2
         self.setting_check.setEnabled(available)
@@ -1677,11 +1714,13 @@ class SetupPage(QWidget):
         if values.get("setting_values_enabled"):
             cfg.setting_filter_values = list(values.get("setting_values") or ())
         cfg.min_duration_s, cfg.max_duration_s = self._duration_filter()
-        if cfg.min_duration_s is not None and cfg.max_duration_s is not None \
-                and cfg.min_duration_s > cfg.max_duration_s:
-            self.preview_label.setText(f"<span style='color:{_error_color()}'>The min. track duration "
-                                       "must not be greater than the max. track duration.</span>")
-            return None
+        cfg.min_prob_weighted, cfg.max_prob_weighted = self._prob_filter()
+        for low, high, name in ((cfg.min_duration_s, cfg.max_duration_s, "track duration"),
+                                (cfg.min_prob_weighted, cfg.max_prob_weighted, "weighted probability")):
+            if low is not None and high is not None and low > high:
+                self.preview_label.setText(f"<span style='color:{_error_color()}'>The min. {name} "
+                                           f"must not be greater than the max. {name}.</span>")
+                return None
         if values.get("stratum_rank_enabled"):
             cfg.stratum_rank = values.get("stratum_rank")
         cfg.stratum_setting = bool(values.get("stratum_setting_enabled"))
@@ -5954,15 +5993,16 @@ def _error_color() -> str:
 
 
 def _fmt_selection(sampling: dict[str, Any], full: bool = False) -> str:
-    """Return the track selection of a session (duration, setting, period and taxa filters, as in the setup box)."""
+    """Return the track selection of a session (duration, probability, setting, period and taxa filters)."""
     def listed(values: Sequence[str]) -> str:
         return ", ".join(values) if full or len(values) <= 4 else f"{', '.join(values[:4])}, +{len(values) - 4} more"
 
     rank, taxa = sampling["taxon_filter_rank"], sampling["taxon_filter_values"]
     granularity, periods = sampling["period_filter_granularity"], sampling["period_filter_values"]
     settings = sampling["setting_filter_values"]
-    duration = _fmt_duration(sampling["min_duration_s"], sampling["max_duration_s"])
-    parts = [duration] if duration else []
+    ranges = (_fmt_range("duration", sampling["min_duration_s"], sampling["max_duration_s"], " s"),
+              _fmt_range("weighted probability", sampling["min_prob_weighted"], sampling["max_prob_weighted"]))
+    parts = [text for text in ranges if text]
     if settings:
         parts.append(f"settings: {listed(settings)}")
     if granularity and periods:
@@ -5985,16 +6025,16 @@ def _fmt_gap(gap_s: float) -> str:
     return f"{text} {'overlap' if gap_s < 0 else 'before'}"
 
 
-def _fmt_duration(low: float | None, high: float | None) -> str:
-    """Return a duration range as a condition, e.g. 'duration 2-3600 s' (empty without bounds)."""
+def _fmt_range(name: str, low: float | None, high: float | None, unit: str = "") -> str:
+    """Return a range as a condition, e.g. 'duration 2-3600 s' (empty without bounds)."""
     if low is not None and low == high:
-        return f"duration {low:g} s"
+        return f"{name} {low:g}{unit}"
     if low is not None and high is not None:
-        return f"duration {low:g}-{high:g} s"
+        return f"{name} {low:g}-{high:g}{unit}"
     if low is not None:
-        return f"duration ≥ {low:g} s"
+        return f"{name} ≥ {low:g}{unit}"
     if high is not None:
-        return f"duration ≤ {high:g} s"
+        return f"{name} ≤ {high:g}{unit}"
     return ""
 
 

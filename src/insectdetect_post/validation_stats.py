@@ -13,7 +13,7 @@ excluded from the accuracies unless
 their deepest determined rank. Accuracy and precision come with Wilson 95 % intervals, kappa with
 its large-sample interval. A stratified sample (sampling fractions differ between strata) adds
 stratum-weighted estimates for the tracks of the sampled strata (the run's tracks after the session's
-taxa, period and setting filters, without strata below the minimum size): every validated track stands for
+track selection, without strata below the minimum size): every validated track stands for
 N_h / n_h tracks of its stratum, and only strata with a validated track count.
 
 Functions:
