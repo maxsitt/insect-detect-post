@@ -733,6 +733,7 @@ class SetupPage(QWidget):
         self._prefill_selection: tuple[tuple[str, ...], VerdictSelection] | None = None
         self._preview_keys: list[TrackKey] = []
         self._start_problem = ""
+        self._install_locked = False
         self._summary_error: str | None = None
         self._thread: QThread | None = None
         self._worker: RunLoadWorker | None = None
@@ -743,6 +744,7 @@ class SetupPage(QWidget):
         self._preview_timer.timeout.connect(self._update_preview)
         self._create_ui()
         self._restore_settings()
+        self._update_start_state()
 
     def _create_ui(self) -> None:
         """Build the boxes of the setup page and connect their signals."""
@@ -1110,6 +1112,7 @@ class SetupPage(QWidget):
         self._set_options_enabled(False)
         if path is None:
             self._cleanup_thread()  # stop a search for the previous directory
+            self._update_start_state()
             self.load_progress.setVisible(False)
             if not text.strip():
                 self._set_summary("Select a run directory.")
@@ -1128,7 +1131,9 @@ class SetupPage(QWidget):
         if self.update_btn is not None:  # no update while loading
             self.update_btn.set_busy(True)
         self._thread = QThread()
-        self._worker = RunLoadWorker(path, load_taxonomy=self.taxonomy is None, allow_download=allow_download)
+        # A download replaces the taxonomy index, which stays usable until the new one is loaded
+        self._worker = RunLoadWorker(path, load_taxonomy=allow_download or self.taxonomy is None,
+                                     allow_download=allow_download)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.status.connect(self._on_load_status)
@@ -1136,6 +1141,7 @@ class SetupPage(QWidget):
         self._worker.finished.connect(self._on_loaded)
         self._worker.error.connect(self._on_load_error)
         self._thread.start()
+        self._update_start_state()
 
     def _cleanup_thread(self) -> None:
         """Stop the loader thread and release it and its worker."""
@@ -1205,11 +1211,11 @@ class SetupPage(QWidget):
         self.download_btn.setEnabled(True)
         self._set_summary(message, error=True)
         logger.error(message)
+        self._update_start_state()  # a failed download keeps the run and its previous taxonomy
 
     def _download_taxonomy(self) -> None:
         """Reload the run with the taxonomy file downloaded."""
         if self.run is not None:
-            self.taxonomy = None
             self._start_loading(self.run.root, allow_download=True)
 
     def _set_summary(self, html: str, error: bool = False) -> None:
@@ -1824,16 +1830,20 @@ class SetupPage(QWidget):
         return self.validator_param.text.text().strip()  # type: ignore[union-attr]
 
     def _update_start_state(self) -> None:
-        """Enable the start button with a run, valid settings, a non-empty sample and a validator, else say why."""
-        if self.run is None:
-            hint = ""
+        """Enable the start button when a session can be started, else say why next to it."""
+        if self._install_locked:
+            hint = "Installing the update ..."
+        elif self._thread is not None:
+            hint = "Loading ..."
+        elif self.run is None:
+            hint = "Select a processed run to start."
         elif self._start_problem:
             hint = f"<span style='color:{_error_color()}'>{html.escape(self._start_problem)}</span>"
         elif not self._validator_name():
             hint = "Enter a validator name to start."
         else:
             hint = ""
-        self.start_btn.setEnabled(self.run is not None and not hint)
+        self.start_btn.setEnabled(not hint)
         self.start_hint.setText(hint)
 
     def _refresh_prefill_sources(self) -> None:
@@ -1971,10 +1981,8 @@ class SetupPage(QWidget):
         self.sessions_box.setEnabled(not locked)
         self.selection_box.setEnabled(not locked)
         self.sampling_box.setEnabled(not locked)
-        if locked:
-            self.start_btn.setEnabled(False)
-        else:
-            self._update_start_state()
+        self._install_locked = locked
+        self._update_start_state()
 
     def shutdown(self) -> None:
         """Stop the loader thread and the update button (when the window closes)."""
