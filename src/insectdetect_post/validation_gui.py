@@ -494,7 +494,7 @@ name. <i>Recent</i> applies a determination you used before with one click, <b>D
 <td>A false detection: background, plant part, shadow. Press again to take it back.</td></tr>
 <tr><td><b>Not determinable (U)</b></td>
 <td>An arthropod, but no rank can be determined. Press again to take it back.</td></tr>
-<tr><td><b>Reset (R)</b></td>
+<tr><td><b>Reset (Ctrl+R)</b></td>
 <td>Discard everything recorded for the track - verdict, determination, qualifiers, links, flags, tags and
 notes - and start again from the prediction.</td></tr>
 </table>
@@ -596,7 +596,7 @@ keys stay inside the current track: they move between its crops.</p>
 <tr><td><b>L</b></td><td>Link to the nearest earlier track (again: clear the links)</td></tr>
 <tr><td><b>M</b> / <b>Q</b></td><td>Toggle multiple individuals / low image quality</td></tr>
 <tr><td><b>Alt+1 - {_TAG_SHORTCUTS}</b></td><td>Toggle the first {_TAG_SHORTCUTS} tags</td></tr>
-<tr><td><b>R</b></td><td>Discard everything recorded for the track and start again from the prediction</td></tr>
+<tr><td><b>Ctrl+R</b></td><td>Discard everything recorded for the track and start again from the prediction</td></tr>
 <tr><td><b>Esc</b> in a taxon field</td><td>Undo the typing</td></tr>
 <tr><td><b>Ctrl+S</b></td><td>Save now (saving is automatic as well)</td></tr>
 </table>
@@ -2669,7 +2669,7 @@ class VerdictPanel(QWidget):
         layout.addWidget(self.status_label)
 
         # Reset button
-        self.reset_btn = QPushButton("Reset  (R)")
+        self.reset_btn = QPushButton("Reset  (Ctrl+R)")
         self.reset_btn.setToolTip("Discard everything recorded for this track (with a selection: for all selected "
                                   "tracks) and start again")
         self.reset_btn.setStyleSheet(_FLAG_BTN_STYLE)
@@ -4010,7 +4010,7 @@ class ValidationPage(QWidget):
         shortcut("M", self.verdict_panel.toggle_multiple)
         shortcut("L", self.verdict_panel.toggle_link)
         shortcut("D", self.verdict_panel.apply_first_recent)
-        shortcut("R", self._reset_current)
+        shortcut("Ctrl+R", self._reset_current)
         shortcut("Space", self.toggle_playback)
         for i, rank in enumerate(VALIDATION_RANKS[:-1], start=1):
             shortcut(str(i), lambda r=rank: self.verdict_panel.agree_down_to(r))
