@@ -582,6 +582,7 @@ keys stay inside the current track: they move between its crops.</p>
 <td>Next track without a verdict (in a taxon field it first confirms a changed name)</td></tr>
 <tr><td><b>Ctrl+A</b> in the track list</td>
 <td>Select all shown tracks (batch); Ctrl / Shift + click select single tracks or a range</td></tr>
+<tr><td><b>Ctrl+F</b></td><td>Search the track list by ID or taxon</td></tr>
 <tr><td><b>Ctrl+L</b></td><td>Collapse / restore the track list</td></tr>
 </table>
 
@@ -595,7 +596,7 @@ keys stay inside the current track: they move between its crops.</p>
 <tr><td><b>L</b></td><td>Link to the nearest earlier track (again: clear the links)</td></tr>
 <tr><td><b>M</b> / <b>Q</b></td><td>Toggle multiple individuals / low image quality</td></tr>
 <tr><td><b>Alt+1 - {_TAG_SHORTCUTS}</b></td><td>Toggle the first {_TAG_SHORTCUTS} tags</td></tr>
-<tr><td><b>R</b></td><td>Reset the track to the model prediction</td></tr>
+<tr><td><b>R</b></td><td>Discard everything recorded for the track and start again from the prediction</td></tr>
 <tr><td><b>Esc</b> in a taxon field</td><td>Undo the typing</td></tr>
 <tr><td><b>Ctrl+S</b></td><td>Save now (saving is automatic as well)</td></tr>
 </table>
@@ -2489,7 +2490,7 @@ class VerdictPanel(QWidget):
         chips.setSpacing(4)
         self.chip_buttons: dict[str, StyledButton] = {}
         for i, rank in enumerate(VALIDATION_RANKS, start=1):
-            chip = StyledButton(f"{i} {_RANK_LABELS[rank]}", COLOR_VERDICT["partial"], font_size=8)
+            chip = StyledButton(f"{_RANK_LABELS[rank]}  ({i})", COLOR_VERDICT["partial"], font_size=8)
             chip.clicked.connect(lambda _=False, r=rank: self.agree_down_to(r))
             chip.setMinimumWidth(40)
             chip.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -2514,7 +2515,7 @@ class VerdictPanel(QWidget):
         layout.addSpacing(_SECTION_GAP)
 
         # Recent identifications
-        self.recent_label = QLabel("Recent:")
+        self.recent_label = QLabel("Recent  (D):")
         layout.addWidget(self.recent_label)
         probe = QToolButton()  # reserves the row height when no chips are shown
         probe.setText("ID 0")
@@ -2568,12 +2569,12 @@ class VerdictPanel(QWidget):
             self.sex_buttons[sex] = btn
         self.inc_btn = toggle_button(
             "inc.  uncertain", "Uncertain determination (inc.): the characteristic features are visible, but you are "
-            "not certain of the taxon - written after its rank, e.g. Syrphidae fam. inc.  (I)",
+            "not certain of the taxon - written after its rank, e.g. Syrphidae fam. inc. (I)",
             COLOR_VERDICT["partial"])
         self.inc_btn.toggled.connect(self._on_inc_toggled)
         self.agg_btn = toggle_button(
             "agg.  aggregate", "Aggregate determination (agg.): a group of closely related species that cannot be "
-            "separated on images, named after the entered species, e.g. Bombus lucorum agg.  (G)",
+            "separated on images, named after the entered species, e.g. Bombus lucorum agg. (G)",
             COLOR_VERDICT["partial"])
         self.agg_btn.toggled.connect(self._on_agg_toggled)
         qualifiers = QHBoxLayout()
@@ -2642,7 +2643,7 @@ class VerdictPanel(QWidget):
         layout.addSpacing(_SECTION_GAP)
 
         # Tags: one chip per tag of the session, filled while the shown track carries it
-        tags_label = QLabel("Tags:")
+        tags_label = QLabel(f"Tags  (Alt+1-{_TAG_SHORTCUTS}):")
         tags_label.setToolTip(f"Your own labels for what tracks have in common; Alt+1 ... Alt+{_TAG_SHORTCUTS} "
                               f"toggle the first {_TAG_SHORTCUTS} tags; right-click a tag to move or delete it")
         layout.addWidget(tags_label)
@@ -3153,7 +3154,7 @@ class VerdictPanel(QWidget):
             btn.setEnabled(taxa_enabled and not self._blind and rank_index(rank) <= rank_index(self._model_rank)
                            and bool(self._model.get(rank)))
             btn.setToolTip(_BLIND_AGREE_TOOLTIP if self._blind else f"Model prediction correct down to {rank}; "
-                           f"deeper ranks become indet. ({rank_index(rank) + 1})")
+                           "deeper ranks become indet.")
         self.notes_edit.blockSignals(True)
         if self.notes_edit.text() != verdict.notes:
             self.notes_edit.setText(verdict.notes)
@@ -3218,8 +3219,8 @@ class VerdictPanel(QWidget):
                 continue
             btn = QToolButton()
             btn.setText(prefix + deepest)
-            btn.setToolTip(("D · " if not self._chip_lineages else "")
-                           + " › ".join(str(lineage.get(r)) for r in VALIDATION_RANKS if lineage.get(r)))
+            btn.setToolTip(" › ".join(str(lineage.get(r)) for r in VALIDATION_RANKS if lineage.get(r))
+                           + (" (D)" if not self._chip_lineages else ""))
             self._chip_lineages.append(dict(lineage))
             btn.setAutoRaise(True)
             btn.setStyleSheet(_CHIP_STYLE)
@@ -3235,7 +3236,7 @@ class VerdictPanel(QWidget):
             chip.setText(tag)
             chip.setCheckable(True)
             chip.setChecked(tag in self._verdict.tags)
-            chip.setToolTip((f"Alt+{i} · " if i <= _TAG_SHORTCUTS else "") + "right-click to move or delete")
+            chip.setToolTip("Right-click to move or delete" + (f" (Alt+{i})" if i <= _TAG_SHORTCUTS else ""))
             chip.setAutoRaise(True)
             chip.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             chip.setStyleSheet(_TAG_CHIP_STYLE)
@@ -3717,7 +3718,7 @@ class ValidationPage(QWidget):
                                    "(<final CSV>_validated_<validator>_<started>.csv, next to the run's final CSV)")
         self.export_btn.clicked.connect(self.export_validated)
         top.addWidget(self.export_btn)
-        self.help_btn = StyledButton("Help (F1)", COLOR_BTN_HELP)
+        self.help_btn = StyledButton("Help", COLOR_BTN_HELP)
         self.help_btn.clicked.connect(self.show_help)
         top.addWidget(self.help_btn)
         self.back_btn = StyledButton("Back to setup", COLOR_BTN_RESET)
@@ -3748,7 +3749,8 @@ class ValidationPage(QWidget):
         filter_row.addWidget(self.filter_combo, 1)
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("Search ID / taxon ...")
-        self.search_edit.setToolTip("Type what a row shows (ID 140, S3, D1) or part of a taxon name at any rank")
+        self.search_edit.setToolTip("Type what a row shows (ID 140, S3, D1) or part of a taxon name at any rank "
+                                    "(Ctrl+F)")
         self.search_edit.setClearButtonEnabled(True)
         self.search_edit.textChanged.connect(self._apply_list_filter)
         filter_row.addWidget(self.search_edit, 1)
@@ -3952,7 +3954,7 @@ class ValidationPage(QWidget):
         self.next_btn.setToolTip("Next track (PgDn or Ctrl+Right); the arrow keys move between crops")
         self.next_btn.clicked.connect(lambda: self._step(1))
         self.next_todo_btn = StyledButton("Next unvalidated  (Enter)", COLOR_BTN_VALIDATE)
-        self.next_todo_btn.setToolTip("Next track without a verdict (Enter)")
+        self.next_todo_btn.setToolTip("Next track without a verdict")
         self.next_todo_btn.clicked.connect(self.next_unvalidated)
         for btn in (self.prev_btn, self.next_btn, self.next_todo_btn):
             btn.setMinimumWidth(60)
@@ -4022,6 +4024,7 @@ class ValidationPage(QWidget):
         shortcut("Enter", self._on_return_key)
         shortcut("Ctrl+S", self.save_now)
         shortcut("Ctrl+L", self.toggle_track_list)
+        shortcut("Ctrl+F", self.focus_search)
         shortcut("F1", self.show_help)
 
     def load_session(self, run: ValidationRun, session: ValidationSession, taxonomy: TaxonomyIndex) -> None:
@@ -4411,6 +4414,14 @@ class ValidationPage(QWidget):
         else:
             width = max(self._track_list_width, 200)
             self.splitter.setSizes([width, max(sizes[1] - width, 420), sizes[2]])
+
+    @Slot()
+    def focus_search(self) -> None:
+        """Focus the track list search with its text selected (restores a collapsed track list)."""
+        if self.splitter.sizes()[0] == 0:
+            self.toggle_track_list()
+        self.search_edit.setFocus()
+        self.search_edit.selectAll()
 
     def _show_track(self, key: TrackKey) -> None:
         """Show a track (info, verdict form, comparison, crops) and prefetch the next one."""
