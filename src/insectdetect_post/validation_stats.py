@@ -64,6 +64,7 @@ from insectdetect_post.validation_session import (
     DIFFERENT_TAXA_IN_TRACK,
     ID_QUALIFIER_AGG,
     ID_QUALIFIER_INC,
+    MORPHOSPECIES_KEY,
     MULTIPLE_INDIVIDUALS_NOT_ASSESSABLE,
     MULTIPLE_INDIVIDUALS_TYPES,
     VERDICT_TYPES,
@@ -98,8 +99,8 @@ STATS_COLUMN_DESCRIPTIONS = {
     "session_id": "Recording session of the camera",
     "track_id": "Tracking ID of the track",
     "linked_track_id": "Earlier track it was linked to as the same individual",
-    "val_track": "Validator's taxon of the track at this rank",
-    "val_linked": "Validator's taxon of the linked track at this rank",
+    "val_track": "Validator's taxon of the track at this rank (or its morphospecies)",
+    "val_linked": "Validator's taxon of the linked track at this rank (or its morphospecies)",
     "stratum_id": "Stratum the tracks were sampled from",
     "stratum_setting": "Camera setting of the stratum",
     "stratum_taxon": "Predicted taxon of the stratum",
@@ -164,7 +165,8 @@ STATS_TABLE_DESCRIPTIONS = {
                              "n_validated": "Validated tracks of the session"},
     "verdict_distribution_by_stratum": {"n_tracks": "Validated tracks of the stratum with this verdict type or flag",
                                         "n_validated": "Validated tracks of the stratum"},
-    "linked_track_conflicts": {"rank": "Highest rank at which the two tracks were determined differently",
+    "linked_track_conflicts": {"rank": "Highest rank at which the two tracks were determined differently "
+                                       "('morphospecies': same genus, different morphospecies)",
                                "track_id": "Track that was linked to an earlier one as the same individual"},
     "effort_by_taxon": {"n_validated": "Validated tracks with this model prediction and a recorded validation time"},
     "per_taxon": {"n_validated": "Validated tracks with this model prediction (not-assessable ones only if the "
@@ -648,7 +650,7 @@ def compare_sessions(
 
 
 def linked_track_conflicts(frame: pl.DataFrame) -> pl.DataFrame:
-    """Return the linked tracks whose determinations contradict (different names at the same rank).
+    """Return the linked tracks whose determinations contradict (different names at a rank or morphospecies).
 
     Returns:
         'device_id, session_id, track_id, linked_track_id, rank, val_track, val_linked'.
@@ -671,7 +673,8 @@ def linked_track_conflicts(frame: pl.DataFrame) -> pl.DataFrame:
             # An aggregate does not contradict a species it may include
             aggregate = (has_qualifier(row.get("val_qualifier"), ID_QUALIFIER_AGG)
                          or has_qualifier(other.get("val_qualifier"), ID_QUALIFIER_AGG))
-            for rank in VALIDATION_RANKS:
+            # Two morphospecies of the same genus contradict as well (another genus already did)
+            for rank in (*VALIDATION_RANKS, MORPHOSPECIES_KEY):
                 a, b = row.get(f"val_{rank}"), other.get(f"val_{rank}")
                 if aggregate and rank == "species":
                     continue

@@ -49,11 +49,13 @@ from insectdetect_post.validation_session import (
     EXPORT_SUFFIX,
     ID_QUALIFIER_AGG,
     ID_QUALIFIER_INC,
+    MORPHOSPECIES_KEY,
     STAMP_FORMAT,
     ValidationSession,
     Verdict,
     allowed_qualifier,
     app_version,
+    apply_morphospecies_rule,
     derive_verdict,
     has_qualifier,
     join_links,
@@ -255,6 +257,7 @@ def export_validated_sessions(
             "sessions": [_session_record(s, folder / _SESSIONS_DIR) for s in sessions],
             "taxonomy_differs": taxonomy_differs,
             "custom_taxa": _custom_taxa(sessions),
+            "morphospecies": _morphospecies(sessions),
             "counts": counts,
             "links_dropped": [{**dict(zip(TRACK_KEY_COLUMNS, key, strict=True)), "linked_track_id": tid,
                                "validation_session": session.stem} for key, tid, session in selection.dropped_links],
@@ -364,7 +367,7 @@ def _conflict(verdicts: Sequence[Verdict]) -> str | None:
     if True in false_positive:
         return None
     names = [_determined_names(v) for v in verdicts]
-    for rank in VALIDATION_RANKS:
+    for rank in (*VALIDATION_RANKS, MORPHOSPECIES_KEY):
         if len({n[rank] for n in names if n[rank]}) > 1:
             return DIFFERENT_TAXA
     return DIFFERENT_DEPTH if len({tuple(n.values()) for n in names}) > 1 else None
@@ -375,8 +378,8 @@ def _lowest_common_ancestor(candidates: Sequence[tuple[ValidationSession, Verdic
 
     From class downwards a rank is kept while every verdict has the same entry. From the first rank where
     they differ, every rank is 'indet.'. A false positive against an arthropod gives 'indet.' at every rank.
-    'agg.' is kept if one verdict names the kept species as an aggregate, 'inc.' if one marks the deepest
-    kept rank as uncertain, the sex if all recorded values agree.
+    A morphospecies is kept if every verdict names it. 'agg.' is kept if one verdict names the kept species as
+    an aggregate, 'inc.' if one marks the deepest kept rank as uncertain, the sex if all recorded values agree.
     """
     verdicts = [verdict for _, verdict in candidates]
     result = verdicts[0].copy()
@@ -390,6 +393,9 @@ def _lowest_common_ancestor(candidates: Sequence[tuple[ValidationSession, Verdic
         entries = {v.val.get(rank) or None for v in arthropods}
         cut = cut or len(entries) > 1
         result.val[rank] = INDET_LABEL if cut else entries.pop()
+    labels = {v.morphospecies() for v in arthropods}
+    if not cut and len(labels) == 1 and (label := labels.pop()):
+        result.val[MORPHOSPECIES_KEY] = label
     lowest = _lowest(result)
     qualifier = None
     if lowest == "species" and any(has_qualifier(v.qualifier, ID_QUALIFIER_AGG) for v in arthropods):
@@ -400,15 +406,21 @@ def _lowest_common_ancestor(candidates: Sequence[tuple[ValidationSession, Verdic
     result.qualifier = qualifier
     sexes = {v.sex for v in arthropods if v.sex}
     result.sex = sexes.pop() if len(sexes) == 1 else None
+    apply_morphospecies_rule(result)
     return result
 
 
 def _determined_names(verdict: Verdict) -> dict[str, str | None]:
-    """Return the determined name per rank; the species of an aggregate counts as undetermined, as in the verdict."""
+    """Return the determined name per rank and the morphospecies (MORPHOSPECIES_KEY).
+
+    The species of an aggregate counts as undetermined, as in the verdict. A morphospecies stands in for an
+    undetermined species: against a named species or none it differs in depth, against another one in the taxon.
+    """
     lowest = _lowest(verdict)
     aggregate = has_qualifier(allowed_qualifier(verdict.qualifier, lowest), ID_QUALIFIER_AGG)
-    return {rank: name if name not in (None, "", INDET_LABEL) and not (aggregate and rank == "species") else None
-            for rank, name in ((r, verdict.val.get(r)) for r in VALIDATION_RANKS)}
+    names = {rank: name if name not in (None, "", INDET_LABEL) and not (aggregate and rank == "species") else None
+             for rank, name in ((r, verdict.val.get(r)) for r in VALIDATION_RANKS)}
+    return {**names, MORPHOSPECIES_KEY: verdict.morphospecies()}
 
 
 def _lowest(verdict: Verdict) -> str | None:
@@ -530,6 +542,14 @@ def _custom_taxa(sessions: Sequence[ValidationSession]) -> list[dict[str, Any]]:
     for session in sessions:
         taxa.extend(entry for entry in session.meta["custom_taxa"] if entry not in taxa)
     return taxa
+
+
+def _morphospecies(sessions: Sequence[ValidationSession]) -> list[dict[str, str]]:
+    """Return the morphospecies lists of all sessions, each entry once, in session order."""
+    entries: list[dict[str, str]] = []
+    for session in sessions:
+        entries.extend(entry for entry in session.meta["morphospecies"] if entry not in entries)
+    return entries
 
 
 def _earlier_tracks(selection: VerdictSelection, run: ValidationRun) -> dict[TrackKey, list[str]]:

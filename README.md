@@ -451,6 +451,8 @@ guidelines and all keyboard shortcuts.
 2. **Validate the tracks** - confirm the prediction (fully or down to a rank), correct it, or mark the
    track as not an arthropod (false positive) or not determinable. Qualifiers (uncertain, aggregate)
    and flags (same individual, multiple individuals, low image quality) record additional information.
+   A species you can tell apart but not name is recorded as a **morphospecies** of its genus
+   (e.g. *Bombus* sp. red-tailed), from a list the session keeps.
    Select several tracks to handle them at once with batch verdicts/determinations.
 3. **Review the results** - view/export the statistics and export the validated CSV (see below).
 
@@ -468,7 +470,9 @@ automatically, so you can close the window at any time and resume the session la
 - **`Export validated CSV`** - writes `..._classified_final_validated_<validator>_<started>.csv` next to
   the final CSV: every track of the run with your verdict and determination, plus `combined_<rank>` -
   your taxon for validated tracks, none for false positives, the model's for all other tracks
-  (`combined_source` tells which). Tracks linked as the same individual share an `individual_id`.
+  (`combined_source` tells which). `combined_morphospecies` holds your morphospecies (e.g.
+  `Bombus sp. red-tailed`), a track has either a species or a morphospecies. Tracks linked as the same
+  individual share an `individual_id`.
   Use this file instead of `..._classified_final.csv` for analysis after a validation.
 
 Every session is identified by its validator and its start time (`<started>` = `YYYY-MM-DD_HH-MM-SS`):

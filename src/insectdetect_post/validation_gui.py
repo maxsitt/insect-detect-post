@@ -51,6 +51,7 @@ from PySide6.QtCore import (
     QThread,
     QTimer,
     Signal,
+    SignalInstance,
     Slot,
 )
 from PySide6.QtGui import (
@@ -96,6 +97,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSlider,
+    QSpacerItem,
     QSplitter,
     QStackedWidget,
     QTableWidget,
@@ -143,6 +145,7 @@ from insectdetect_post.constants import (
     TRACK_KEY_COLUMNS,
     VALIDATION_MAX_PER_STRATUM_DEFAULT,
     VALIDATION_MIN_PER_STRATUM_DEFAULT,
+    VALIDATION_MORPHOSPECIES_MAX_CHARS,
     VALIDATION_NOTES_MAX_CHARS,
     VALIDATION_PLAYBACK_INTERVAL_DEFAULT_MS,
     VALIDATION_PLAYBACK_INTERVALS_MS,
@@ -202,6 +205,7 @@ from insectdetect_post.validation_session import (
     ID_QUALIFIER_AGG,
     ID_QUALIFIER_INC,
     IMAGE_QUALITY_REASONS,
+    MORPHOSPECIES_KEY,
     MULTIPLE_INDIVIDUALS_NOT_ASSESSABLE,
     MULTIPLE_INDIVIDUALS_TYPES,
     VERDICT_TYPES,
@@ -210,10 +214,14 @@ from insectdetect_post.validation_session import (
     Verdict,
     allowed_qualifier,
     anchor_of,
+    apply_morphospecies_rule,
     delete_session,
     derive_verdict,
     has_qualifier,
     join_links,
+    morphospecies_label,
+    morphospecies_name,
+    normalize_morphospecies,
     normalize_tag,
     parse_links,
     qualifier_mark,
@@ -347,6 +355,10 @@ _LINK_BTN_BATCH_TOOLTIPS = {
 
 # Verdict panel: more children of a parent than this are offered by type-ahead only, not as a dropdown list
 _MAX_LISTED_CHILDREN = 3000
+
+# Verdict panel: tooltip of the morphospecies field
+_MORPHOSPECIES_TOOLTIP = ("Type a new morphospecies or pick one that was already added for the genus, clear the field "
+                          "to remove it. Needs a determined genus and sets the species to 'indet.'.")
 
 # Track list: labels and tooltips of the filters (TrackListModel.FILTERS)
 _FILTER_LABELS = {
@@ -490,6 +502,13 @@ determinable from the images) - e.g. &ldquo;certainly Syrphidae, genus unclear&r
 field accepts the epithet alone (&ldquo;balteatus&rdquo;). Taxa missing from the list can be typed in. The
 <b>?</b> next to a rank sets it and all lower ranks to <i>indet.</i>, click it again to restore the model&rsquo;s
 name. <i>Recent</i> applies a determination you used before with one click, <b>D</b> the leftmost one.</td></tr>
+<tr><td><b>Morphospecies</b></td>
+<td>A species you can tell apart in the images but cannot name, e.g. a color form of <i>Bombus</i> sp. With the
+genus determined, type a new morphospecies name (e.g. &ldquo;red-tailed&rdquo;) or pick an existing one of this
+genus: the species becomes <i>indet.</i> and the track reads &ldquo;<i>Bombus</i> sp. red-tailed&rdquo;.
+Clear the field to remove it from the track. <b>&#10000;</b> lists every morphospecies of this session with its
+tracks: rename one on all of them (an existing name of the genus merges both) or delete it from the list and its
+tracks (genus is kept, species stays <i>indet.</i>).</td></tr>
 <tr><td><b>Not an arthropod (F)</b></td>
 <td>A false detection: background, plant part, shadow. Press again to take it back.</td></tr>
 <tr><td><b>Not determinable (U)</b></td>
@@ -536,8 +555,7 @@ but such tracks are left out of the accuracy statistics.</td></tr>
 it on the track, <b>Alt+1</b> to <b>Alt+{_TAG_SHORTCUTS}</b> toggle the first {_TAG_SHORTCUTS} tags. Right-click a
 tag to move it (this changes its number) or to delete it. The tags belong to the session: a new session of the run
 starts with the tags of its last session, so everyone validating it uses the same ones. Tracks marked as <i>Not an
-arthropod</i> keep their tags. For a morphospecies, determine the genus, set the species to <i>indet.</i> and add
-a tag such as &ldquo;morph_black&rdquo;: a made-up species name would count as a wrong prediction.</td></tr>
+arthropod</i> keep their tags.</td></tr>
 <tr><td><b>Notes</b></td>
 <td>One short line (at most {VALIDATION_NOTES_MAX_CHARS} characters) for what the fields do not cover,
 e.g. &ldquo;mating pair&rdquo; or &ldquo;pollen on the legs&rdquo;.</td></tr>
@@ -1900,6 +1918,12 @@ class SetupPage(QWidget):
         stored = str(_settings().value(_SETTINGS_KEY_TAGS, "") or "")
         return [tag for tag in stored.split(";") if tag]
 
+    def _starting_morphospecies(self) -> list[dict[str, str]]:
+        """Return the morphospecies list of a new session: the run's last updated session's (none without one)."""
+        if self.run is not None and (sessions := ValidationSession.list_sessions(self.run.root)):
+            return list(sessions[0]["morphospecies"])
+        return []
+
     def _start_new(self) -> None:
         """Create, save and open a new session with the current settings."""
         if self.run is None or self.taxonomy is None:
@@ -1917,7 +1941,8 @@ class SetupPage(QWidget):
             return
         # Every session gets its own id and files
         session = ValidationSession.create(self.run, validator, sampled, cfg, self.taxonomy,
-                                           blind=bool(self.blind_param.value()), tags=self._starting_tags())
+                                           blind=bool(self.blind_param.value()), tags=self._starting_tags(),
+                                           morphospecies=self._starting_morphospecies())
         if sources := self._prefill_sessions():
             prefill_session(session, sources, self.run)
             for entry in session.meta["custom_taxa"]:
@@ -2419,6 +2444,7 @@ class VerdictPanel(QWidget):
         tag_added(str): A new tag entered with the '+' chip.
         tag_moved(str, int): '(tag, index)' to move the tag to in the tag list.
         tag_removal_requested(str): 'Delete' was chosen for a tag.
+        morphospecies_overview_requested(): The button next to the morphospecies field was pressed.
         jump_requested(str): Track ID of the same device and session to show.
     """
     verdict_changed = Signal(object)
@@ -2426,6 +2452,7 @@ class VerdictPanel(QWidget):
     tag_added = Signal(str)
     tag_moved = Signal(str, int)
     tag_removal_requested = Signal(str)
+    morphospecies_overview_requested = Signal()
     reset_requested = Signal()
     action_done = Signal()
     custom_taxon_added = Signal(str, object)
@@ -2454,6 +2481,7 @@ class VerdictPanel(QWidget):
         self._recent: list[Lineage] = []
         self._chip_lineages: list[Lineage] = []  # lineages of the shown recent chips, left to right
         self._tags: list[str] = []  # tag list of the session, see set_tags()
+        self._morphospecies_names: Callable[[str], list[str]] = lambda _genus: []  # morphospecies of a genus
         self._prefill_note = ""  # where the shown track's entry was pre-filled from, see set_prefill_note()
         self._batch_counts = (0, 0)
         self._batch_link: tuple[bool, bool, str] | None = None  # link button for a selection, see set_batch_link()
@@ -2552,14 +2580,38 @@ class VerdictPanel(QWidget):
             indet_btn.clicked.connect(lambda checked=False, r=rank: self._on_indet_clicked(r, checked))
             row_layout.addWidget(indet_btn, 0)
             model_label = QLabel("")
-            model_label.setMinimumWidth(16)
+            model_label.setFixedWidth(20)
             model_label.setToolTip("Model prediction at this rank")
             row_layout.addWidget(model_label, 0)
             combos.addRow(f"{_RANK_LABELS[rank]}:", row_widget)
             self.combos[rank] = combo
             self.indet_buttons[rank] = indet_btn
             self.model_labels[rank] = model_label
+
+        # Morphospecies row below the species, its overview button in the column of the indet. buttons
+        self.morph_combo = TaxonCombo(MORPHOSPECIES_KEY, leading_item=None,
+                                      placeholder="e.g. 'red-tailed' or 'green-metallic'")
+        self.morph_combo.setToolTip(_MORPHOSPECIES_TOOLTIP)
+        if (edit := self.morph_combo.lineEdit()) is not None:
+            edit.setMaxLength(VALIDATION_MORPHOSPECIES_MAX_CHARS + len("sp. "))  # a leading 'sp.' is dropped
+        self.morph_combo.committed.connect(self._on_morphospecies_committed)
+        self.morph_edit_btn = QToolButton()
+        self.morph_edit_btn.setText("\u2710")  # a pencil without an emoji form (U+270F is drawn as one)
+        self.morph_edit_btn.setFixedWidth(26)
+        self.morph_edit_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.morph_edit_btn.setToolTip("Morphospecies of this session: overview, rename, delete")
+        self.morph_edit_btn.clicked.connect(lambda: self.morphospecies_overview_requested.emit())
+        morph_widget = QWidget()
+        morph_layout = QHBoxLayout(morph_widget)
+        morph_layout.setContentsMargins(0, 0, 0, 0)
+        morph_layout.setSpacing(4)
+        morph_layout.addWidget(self.morph_combo, 1)
+        morph_layout.addWidget(self.morph_edit_btn, 0)
+        morph_layout.addSpacing(24)  # under the model marks (20 px plus the layout spacing)
+        combos.addItem(QSpacerItem(0, 2))  # a little apart from the ranks: an alternative to the species, no rank
+        combos.addRow("Morphosp.:", morph_widget)
         layout.addLayout(combos)
+
         # Sex and qualifiers of the determination in one row
         self.sex_buttons: dict[str, QPushButton] = {}
         for sex, label in _SEX_LABELS.items():
@@ -2718,6 +2770,17 @@ class VerdictPanel(QWidget):
         self._tags = list(tags)
         self._render_tags()
 
+    def set_morphospecies_source(self, names: Callable[[str], list[str]]) -> None:
+        """Set where the morphospecies come from: 'names' returns the listed names of a genus."""
+        self._morphospecies_names = names
+
+    def refresh_morphospecies(self) -> None:
+        """Update the morphospecies row after the session stored a change (a new name is listed by then)."""
+        was_loading = self._loading
+        self._loading = True
+        self._sync_morphospecies(not self._verdict.false_positive)
+        self._loading = was_loading
+
     def set_batch_count(self, count: int, copy_targets: int = 0) -> None:
         """Update the batch banner.
 
@@ -2797,6 +2860,8 @@ class VerdictPanel(QWidget):
     def apply_lineage(self, lineage: Lineage) -> None:
         """Apply a full/partial lineage (recent identification chip), also to the selected tracks."""
         new_val: Lineage = {r: (lineage.get(r) or INDET_LABEL) for r in VALIDATION_RANKS}
+        if label := lineage.get(MORPHOSPECIES_KEY):
+            new_val[MORPHOSPECIES_KEY] = label
         self._store_val(new_val, one_click=True)
         self.batch_action.emit("apply_lineage", new_val)
 
@@ -2877,7 +2942,8 @@ class VerdictPanel(QWidget):
             base.false_positive = current.false_positive
             base.qualifier, base.sex = current.qualifier, current.sex
             base.val_source = "free_text" if current.val_source == "free_text" else "taxonomy_list"
-        # Qualifier rule of the form (see _commit())
+        # Morphospecies and qualifier rules of the form (see _commit())
+        apply_morphospecies_rule(base)
         determined = base.determinate_ranks()
         base.qualifier = allowed_qualifier(base.qualifier, determined[-1] if determined else None)
         return base
@@ -3018,7 +3084,7 @@ class VerdictPanel(QWidget):
         return "taxonomy_list"
 
     def _commit(self, one_click: bool = False, validate: bool = True) -> None:
-        """Apply the qualifier rule, update the widgets and emit the edited verdict.
+        """Apply the morphospecies and qualifier rules, update the widgets and emit the edited verdict.
 
         Args:
             one_click: Also emit action_done (auto-advance after a one-click verdict).
@@ -3026,6 +3092,7 @@ class VerdictPanel(QWidget):
         """
         if self._loading:
             return
+        apply_morphospecies_rule(self._verdict)
         determined = self._verdict.determinate_ranks()
         self._verdict.qualifier = allowed_qualifier(self._verdict.qualifier, determined[-1] if determined else None)
         if validate:
@@ -3102,7 +3169,8 @@ class VerdictPanel(QWidget):
         has_taxon = bool(verdict.determinate_ranks())
         hidden = self.blind_hidden
         self.all_indet_btn.setChecked(self._is_all_indet())
-        self.inc_btn.setEnabled(taxa_enabled and has_taxon)
+        morphospecies = verdict.morphospecies()
+        self.inc_btn.setEnabled(taxa_enabled and has_taxon and morphospecies is None)
         self.inc_btn.setChecked(has_qualifier(verdict.qualifier, ID_QUALIFIER_INC) and taxa_enabled and has_taxon)
         has_species = "species" in verdict.determinate_ranks()  # agg. stands after a species name
         self.agg_btn.setEnabled(taxa_enabled and has_species)
@@ -3150,6 +3218,7 @@ class VerdictPanel(QWidget):
             self.model_labels[rank].setStyleSheet(f"color: {color}; font-weight: bold;" if color else "")
             self.model_labels[rank].setToolTip("Model: hidden (blind)" if hidden else
                                                f"Model: {model_name}" if model_name else "Model: not predicted")
+        self._sync_morphospecies(taxa_enabled)
         for rank, btn in self.chip_buttons.items():
             btn.setEnabled(taxa_enabled and not self._blind and rank_index(rank) <= rank_index(self._model_rank)
                            and bool(self._model.get(rank)))
@@ -3162,6 +3231,20 @@ class VerdictPanel(QWidget):
         self.notes_edit.setToolTip(verdict.notes)
         self._render_status()
         self._loading = was_loading
+
+    def _genus(self) -> str | None:
+        """Return the determined genus of the shown verdict, None if not determined."""
+        genus = self._verdict.val.get("genus")
+        return None if genus in (None, "", INDET_LABEL) else genus
+
+    def _sync_morphospecies(self, taxa_enabled: bool) -> None:
+        """Reflect the morphospecies: only with a determined genus (entering one drops 'inc.' and 'agg.')."""
+        genus = self._genus()
+        name = morphospecies_name(self._verdict.morphospecies(), genus)
+        names = self._morphospecies_names(genus) if genus else []
+        self.morph_combo.setEnabled(taxa_enabled and genus is not None)
+        self.morph_combo.set_choices(names, None)
+        self.morph_combo.set_text(name or "")
 
     def set_prefill_note(self, note: str) -> None:
         """Show where the shown track's entry was pre-filled from (empty: not pre-filled)."""
@@ -3186,6 +3269,8 @@ class VerdictPanel(QWidget):
             # Qualifier mark of the rank it applies to
             if mark := qualifier_mark(self._verdict.qualifier, lowest):
                 text += f" (<b>{mark}</b>)"
+            if morphospecies := self._verdict.morphospecies():
+                text += f" · morphospecies <b>{html.escape(morphospecies)}</b>"
         conflict = self._link_conflict() if self._link_allowed() else None
         if conflict:
             text += (f" · <b style='color:{COLOR_VERDICT['corrected']}'>⚠ ID {conflict[0]} determined as "
@@ -3213,14 +3298,14 @@ class VerdictPanel(QWidget):
         if not entries:
             self.recent_row.add_widget(QLabel(f"<span style='color:{active_theme().subtext0.name()}'>-</span>"))
         for prefix, lineage in entries:
-            deepest = next((lineage[r] for r in reversed(VALIDATION_RANKS)
-                            if lineage.get(r) and lineage[r] != INDET_LABEL), None)
+            deepest = lineage.get(MORPHOSPECIES_KEY) or next(
+                (lineage[r] for r in reversed(VALIDATION_RANKS) if lineage.get(r) and lineage[r] != INDET_LABEL), None)
             if not deepest:
                 continue
             btn = QToolButton()
             btn.setText(prefix + deepest)
-            btn.setToolTip(" › ".join(str(lineage.get(r)) for r in VALIDATION_RANKS if lineage.get(r))
-                           + (" (D)" if not self._chip_lineages else ""))
+            path = [str(lineage[r]) for r in (*VALIDATION_RANKS, MORPHOSPECIES_KEY) if lineage.get(r)]
+            btn.setToolTip(" › ".join(path) + (" (D)" if not self._chip_lineages else ""))
             self._chip_lineages.append(dict(lineage))
             btn.setAutoRaise(True)
             btn.setStyleSheet(_CHIP_STYLE)
@@ -3273,7 +3358,7 @@ class VerdictPanel(QWidget):
             other = member.get("human")
             if not other or member.get("note"):  # different taxa in track: may show another taxon
                 continue
-            for rank in VALIDATION_RANKS:
+            for rank in (*VALIDATION_RANKS, MORPHOSPECIES_KEY):
                 a, b = self._verdict.val.get(rank), other.get(rank)
                 if a and b and a != INDET_LABEL and b != INDET_LABEL and a != b:
                     return str(member["track_id"]), rank, a, b
@@ -3462,6 +3547,24 @@ class VerdictPanel(QWidget):
         if deeper and text and text != INDET_LABEL:
             QTimer.singleShot(0, lambda: self.focus_rank(deeper[0]))
 
+    def _on_morphospecies_committed(self, text: str) -> None:
+        """Set the morphospecies (the species becomes 'indet.') or remove it (empty field)."""
+        genus = self._genus()
+        if self._loading or genus is None:
+            return
+        name = normalize_morphospecies(text)
+        val = dict(self._verdict.val)
+        if not name:
+            if MORPHOSPECIES_KEY not in val:
+                return
+            val.pop(MORPHOSPECIES_KEY)
+        else:
+            # The listed spelling of a name typed in another case
+            listed = next((n for n in self._morphospecies_names(genus) if n.casefold() == name.casefold()), name)
+            val[MORPHOSPECIES_KEY] = morphospecies_label(genus, listed)
+            val["species"] = INDET_LABEL
+        self._store_val(val)
+
     def _on_sex_clicked(self, sex: str, checked: bool) -> None:
         """Set the sex, or clear it when the set button is clicked again."""
         if self._loading:
@@ -3547,7 +3650,7 @@ class VerdictPanel(QWidget):
             return
         # A tag leaves the determination alone: keep what is being typed in a taxon field (not committed yet)
         focus = QApplication.focusWidget()
-        typing = next((edit for combo in self.combos.values()
+        typing = next((edit for combo in (*self.combos.values(), self.morph_combo)
                        if (edit := combo.lineEdit()) is not None and focus in (combo, edit)), None)
         typed = typing.text() if typing is not None else ""
         self._verdict.tags = with_tag(self._verdict.tags, tag, checked)
@@ -3937,6 +4040,9 @@ class ValidationPage(QWidget):
         self.verdict_panel.tag_added.connect(self._on_tag_added)
         self.verdict_panel.tag_moved.connect(self._on_tag_moved)
         self.verdict_panel.tag_removal_requested.connect(self._on_tag_removal)
+        self.verdict_panel.set_morphospecies_source(
+            lambda genus: self.session.morphospecies(genus) if self.session else [])
+        self.verdict_panel.morphospecies_overview_requested.connect(self._open_morphospecies_dialog)
         self.verdict_panel.reset_requested.connect(self._reset_current)
         self.verdict_panel.action_done.connect(self._after_one_click)
         self.verdict_panel.custom_taxon_added.connect(self._on_custom_taxon)
@@ -4154,9 +4260,10 @@ class ValidationPage(QWidget):
             self._show_message("")
 
     def _update_progress(self) -> None:
-        """Update the progress bar and the verdict summary of the top bar."""
+        """Update the progress bar, the verdict summary of the top bar and the panel's morphospecies row."""
         if self.session is None:
             return
+        self.verdict_panel.refresh_morphospecies()  # lists a name the session stored after the panel's sync
         validated, total = self.session.progress()
         self.progress_bar.setMaximum(max(total, 1))
         self.progress_bar.setValue(validated)
@@ -4292,9 +4399,11 @@ class ValidationPage(QWidget):
         determination, lineage = None, ()
         if lowest:  # not for false positives or nothing determined
             determinate = verdict.determinate_ranks()
-            lineage = tuple(verdict.val.get(rank) if rank in determinate else None for rank in VALIDATION_RANKS)
+            morphospecies = verdict.morphospecies()
+            lineage = (*[verdict.val.get(rank) if rank in determinate else None for rank in VALIDATION_RANKS],
+                       morphospecies)
             mark = qualifier_mark(verdict.qualifier, lowest)
-            determination = f"{verdict.val[lowest]} {mark}" if mark else verdict.val[lowest]
+            determination = morphospecies or (f"{verdict.val[lowest]} {mark}" if mark else verdict.val[lowest])
         return RowStatus(verdict_type, verdict.image_quality == "low",
                          bool(has_qualifier(verdict.qualifier, ID_QUALIFIER_INC) and lowest),
                          verdict.multiple_individuals if not verdict.false_positive else None,
@@ -5026,6 +5135,90 @@ class ValidationPage(QWidget):
         self.verdict_panel.set_tags(self.session.tags)
         _settings().setValue(_SETTINGS_KEY_TAGS, ";".join(self.session.tags))
 
+    def _open_morphospecies_dialog(self) -> None:
+        """Show every morphospecies of the session with its tracks, to rename or delete it."""
+        if self.session is None:
+            return
+        dialog = MorphospeciesDialog(self.session.morphospecies_overview, self)
+        dialog.rename_requested.connect(lambda genus, name: self._on_morphospecies_rename(genus, name, dialog))
+        dialog.delete_requested.connect(lambda genus, name: self._on_morphospecies_delete(genus, name, dialog))
+        dialog.exec()
+
+    def _on_morphospecies_rename(self, genus: str, name: str, parent: QWidget | None = None) -> None:
+        """Rename a morphospecies on every track of the session, or merge it into another one of the genus.
+
+        Args:
+            genus: Genus of the morphospecies.
+            name: Morphospecies name.
+            parent: Widget the questions open over (default: the window).
+        """
+        if self.session is None:
+            return
+        owner = parent or self
+        old_label = morphospecies_label(genus, name)
+        dialog = QInputDialog(owner)
+        dialog.setWindowTitle("Rename morphospecies")
+        dialog.setLabelText(f"New name of '{old_label}' in this session (an existing name merges both):")
+        dialog.setTextValue(name)
+        if (edit := dialog.findChild(QLineEdit)) is not None:
+            edit.setMaxLength(VALIDATION_MORPHOSPECIES_MAX_CHARS)
+        if not dialog.exec() or not (new := normalize_morphospecies(dialog.textValue())) or new == name:
+            return
+        n_tracks = len(self.session.morphospecies_keys(genus, name))
+        target = next((n for n in self.session.morphospecies(genus)
+                       if n != name and n.casefold() == new.casefold()), None)
+        if target is not None:
+            reply = QMessageBox.question(
+                owner, "Merge morphospecies",
+                f"'{morphospecies_label(genus, target)}' exists already. Merge '{old_label}' into it? "
+                f"{n_tracks} track{'' if n_tracks == 1 else 's'} of this session will be changed.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel, QMessageBox.StandardButton.Cancel)
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        keys = self.session.rename_morphospecies(genus, name, new)
+        for key in keys:
+            self.track_model.refresh_key(key)
+        self._refresh_shown_track()
+        self._sync_batch()
+        self._update_progress()
+        self._save_timer.start()
+        new_label = morphospecies_label(genus, target or new)
+        self._show_message(f"{'Merged' if target else 'Renamed'} '{old_label}' {'into' if target else 'to'} "
+                           f"'{new_label}' on {len(keys)} track{'' if len(keys) == 1 else 's'}")
+
+    def _on_morphospecies_delete(self, genus: str, name: str, parent: QWidget | None = None) -> None:
+        """Delete a morphospecies from the session's list and from every track that carries it (asks first if any).
+
+        Args:
+            genus: Genus of the morphospecies.
+            name: Morphospecies name.
+            parent: Widget the question opens over (default: the window).
+        """
+        if self.session is None:
+            return
+        label = morphospecies_label(genus, name)
+        if n_tracks := len(self.session.morphospecies_keys(genus, name)):
+            if n_tracks == 1:
+                question = (f"'{label}' is set on 1 track of this session. Delete it from the list and remove it "
+                            "from this track? It keeps its genus, species stays 'indet.'.")
+            else:
+                question = (f"'{label}' is set on {n_tracks} tracks of this session. Delete it from the list and "
+                            "remove it from them? They keep their genus, species stays 'indet.'.")
+            reply = QMessageBox.question(
+                parent or self, "Delete morphospecies", question,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel, QMessageBox.StandardButton.Cancel)
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        keys = self.session.delete_morphospecies(genus, name)
+        for key in keys:
+            self.track_model.refresh_key(key)
+        self._refresh_shown_track()
+        self._sync_batch()
+        self._update_progress()
+        self._save_timer.start()
+        self._show_message(f"Deleted '{label}'" + (f" from {len(keys)} track{'' if len(keys) == 1 else 's'}"
+                                                   if keys else " from the list"))
+
     def _on_custom_taxon(self, rank: str, lineage: Lineage) -> None:
         """Remember a free-text lineage in the session."""
         if self.session is not None:
@@ -5424,6 +5617,74 @@ class ValidationPage(QWidget):
                         validated, total)
         close_log_file(self._session_log)
         self._session_log = None
+
+
+class MorphospeciesDialog(QDialog):
+    """Every morphospecies of a session by genus and name with its tracks, renamed or deleted per row.
+
+    Signals:
+        rename_requested(str, str): '(genus, name)' to rename (the window asks for the new name).
+        delete_requested(str, str): '(genus, name)' to delete (the window asks if tracks carry it).
+    """
+    rename_requested = Signal(str, str)
+    delete_requested = Signal(str, str)
+
+    def __init__(self, entries: Callable[[], list[tuple[str, str, int]]], parent: QWidget | None = None) -> None:
+        """Initialize the dialog showing the morphospecies of this session.
+
+        Args:
+            entries: Returns the session's morphospecies as '(genus, name, tracks)', sorted by genus then name.
+            parent: Parent widget.
+        """
+        super().__init__(parent)
+        self._entries = entries
+        self.setWindowTitle("Morphospecies of this session")
+        self.resize(560, 420)
+        layout = QVBoxLayout(self)
+        self.empty_label = QLabel("No morphospecies in this session yet.")
+        layout.addWidget(self.empty_label)
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["Genus", "Morphospecies", "Tracks", "", ""])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.table.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # no highlighted current cell in a table without selection
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.table, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self.refresh()
+
+    def refresh(self) -> None:
+        """Rebuild the table from the session's current list."""
+        entries = self._entries()
+        self.empty_label.setVisible(not entries)
+        self.table.setVisible(bool(entries))
+        self.table.setRowCount(len(entries))
+        for row, (genus, name, n_tracks) in enumerate(entries):
+            label = morphospecies_label(genus, name)
+            genus_item = QTableWidgetItem(genus)
+            tracks_item = QTableWidgetItem(str(n_tracks))
+            tracks_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            for col, item in enumerate((genus_item, QTableWidgetItem(name), tracks_item)):
+                self.table.setItem(row, col, item)
+            rename_tip = f"Rename '{label}' on every track of this session (an existing name of the genus merges both)"
+            delete_tip = f"Delete '{label}' from the list and from every track of this session"
+            for col, (text, tooltip, signal) in enumerate((("\u2710", rename_tip, self.rename_requested),
+                                                           ("\u2715", delete_tip, self.delete_requested)), start=3):
+                btn = QToolButton()
+                btn.setText(text)
+                btn.setToolTip(tooltip)
+                btn.clicked.connect(lambda _=False, g=genus, n=name, s=signal: self._request(s, g, n))
+                self.table.setCellWidget(row, col, btn)
+
+    def _request(self, signal: SignalInstance, genus: str, name: str) -> None:
+        """Pass a rename or delete on, then show the changed list (rebuilt after the click, not during it)."""
+        signal.emit(genus, name)
+        QTimer.singleShot(0, self.refresh)
 
 
 class StatsDialog(QDialog):

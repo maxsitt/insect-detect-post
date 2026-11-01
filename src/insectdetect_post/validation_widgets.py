@@ -764,7 +764,8 @@ class RowStatus(NamedTuple):
         notes: Notes of the track.
         determination: Determined taxon with its qualifier mark (e.g. 'Bombus terrestris agg.'), None if not
             validated or nothing is determined.
-        lineage: Determined names per VALIDATION_RANKS (None where indet.), empty if 'determination' is None.
+        lineage: Determined names per VALIDATION_RANKS (None where indet.) and the morphospecies label (or None),
+            empty if 'determination' is None.
     """
     verdict: str | None = None
     low_quality: bool = False
@@ -997,8 +998,9 @@ class TrackListModel(QAbstractListModel):
         elif self._blind and status.verdict is None:
             names, group = (), 3
         else:
-            names, group = tuple(row.get(f"pred_{rank}") for rank in VALIDATION_RANKS), 0
-        names = names or (None,) * len(VALIDATION_RANKS)
+            # No morphospecies in a prediction: an empty last slot like a determination without one
+            names, group = (*[row.get(f"pred_{rank}") for rank in VALIDATION_RANKS], None), 0
+        names = names or (None,) * (len(VALIDATION_RANKS) + 1)
         return (group, *[(name or "~").casefold() for name in names], -(row.get("prob") or 0.0),
                 str(row["device_id"]), str(row["session_id"]).zfill(6), str(row["track_id"]).zfill(8))
 
@@ -1103,18 +1105,21 @@ class TrackListModel(QAbstractListModel):
 
 
 class TaxonCombo(QComboBox):
-    """Editable combo box with a type-ahead completer for one rank.
+    """Editable combo box with a type-ahead completer for one rank (or the morphospecies).
 
-    Items are the children of the selected parent ('indet.' first). The completer can search a larger list.
+    Items are the children of the selected parent, after 'leading_item' ('indet.' by default, None for no leading
+    item, as for the morphospecies). The completer can search a larger list. 'placeholder' shows in the empty field.
 
     Signals:
         committed(str): Text committed by choosing an item or finishing the edit.
     """
     committed = Signal(str)
 
-    def __init__(self, rank: str, parent: QWidget | None = None) -> None:
+    def __init__(self, rank: str, parent: QWidget | None = None, leading_item: str | None = INDET_LABEL,
+                 placeholder: str = INDET_LABEL) -> None:
         super().__init__(parent)
         self.rank = rank
+        self._leading_item = leading_item
         self.setEditable(True)
         self.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.setMaxVisibleItems(20)
@@ -1135,10 +1140,10 @@ class TaxonCombo(QComboBox):
         line_edit = self.lineEdit()
         if line_edit is not None:
             line_edit.editingFinished.connect(self._on_editing_finished)
-            line_edit.setPlaceholderText(INDET_LABEL)
+            line_edit.setPlaceholderText(placeholder)
 
     def set_choices(self, items: list[str], completer_model: Any | None) -> None:
-        """Set the items ('indet.' prepended) and the completer model, no-op if unchanged."""
+        """Set the items (the leading item prepended) and the completer model, no-op if unchanged."""
         if items == self._items and completer_model is self._completer_model:
             return
         self._items = list(items)
@@ -1146,7 +1151,8 @@ class TaxonCombo(QComboBox):
         text = self.currentText()
         self.blockSignals(True)
         self.clear()
-        self.addItem(INDET_LABEL)
+        if self._leading_item is not None:
+            self.addItem(self._leading_item)
         if items:
             self.addItems(items)
         if completer_model is not None:

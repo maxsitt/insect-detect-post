@@ -141,6 +141,9 @@ VALIDATION_SMALL_SAMPLE_TRACKS = 30
 VALIDATION_SAME_INDIVIDUAL_WINDOW_S = 10.0
 VALIDATION_SAME_INDIVIDUAL_OVERLAP_S = 3.0
 
+# Validation: maximum length in characters of a morphospecies name
+VALIDATION_MORPHOSPECIES_MAX_CHARS = 40
+
 # Validation: maximum length in characters of a tag
 VALIDATION_TAG_MAX_CHARS = 40
 

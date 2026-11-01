@@ -26,6 +26,8 @@ Functions:
     parse_links(), join_links(), with_link(): Read and edit 'same_individual_as' values.
     normalize_tag(), parse_tags(), join_tags(), with_tag(): Read and edit 'tags' values.
     has_qualifier(), with_qualifier(), allowed_qualifier(), qualifier_mark(): Identification qualifiers.
+    normalize_morphospecies(), morphospecies_label(), morphospecies_name(), allowed_morphospecies(),
+        apply_morphospecies_rule(): Morphospecies of a determination.
     derive_verdict(): Verdict type, agreement rank and lowest determined rank.
     verdict_columns(), verdict_frame(): Verdict columns of the session CSV.
     validated_frame(): Final CSV joined with the verdicts of a session table.
@@ -58,6 +60,7 @@ import polars as pl
 from insectdetect_post.constants import (
     TRACK_KEY_COLUMNS,
     VALIDATION_EFFORT_IDLE_CAP_S,
+    VALIDATION_MORPHOSPECIES_MAX_CHARS,
     VALIDATION_SEED_DEFAULT,
     VALIDATION_TAG_MAX_CHARS,
     OutputLayout,
@@ -120,6 +123,12 @@ ID_QUALIFIER_INC = "inc."
 ID_QUALIFIER_AGG = "agg."
 _ID_QUALIFIERS = (ID_QUALIFIER_INC, ID_QUALIFIER_AGG)
 
+# Key of the morphospecies in a determination ('Verdict.val', recent lineages): no rank, see allowed_morphospecies()
+MORPHOSPECIES_KEY = "morphospecies"
+
+# Open-nomenclature mark between the genus and a morphospecies name (e.g. 'Bombus sp. red-tailed')
+_MORPHOSPECIES_MARK = "sp."
+
 # Rank abbreviations written before a qualifier (e.g. 'Syrphidae fam. inc.')
 _RANK_ABBREVIATIONS = {"class": "cl.", "order": "ord.", "family": "fam.", "genus": "gen.", "species": "sp."}
 
@@ -129,11 +138,14 @@ _RANKS_CSV = VALIDATION_RANKS[::-1]
 # Distinct recent human lineages kept per session
 _RECENT_LINEAGES_KEPT = 32
 
+# Determination columns of the session CSV: a morphospecies stands in for an undetermined species
+_VAL_COLUMNS = ["val_species", "val_morphospecies", *[f"val_{r}" for r in _RANKS_CSV[1:]]]
+
 # Verdict columns of the session CSV
 _VERDICT_COLUMNS = [
     "validated", "validated_at", "validator", "verdict",
     "image_quality", "image_quality_reason", "multiple_individuals", "same_individual_as",
-    *[f"val_{r}" for r in _RANKS_CSV],
+    *_VAL_COLUMNS,
     "val_lowest_rank", "val_qualifier", "val_sex", "val_source", "agree_rank", "tags", "notes",
     "seconds_spent", "prefilled_from", "prefill_edited",
 ]
@@ -156,6 +168,7 @@ _META_KEYS = frozenset({
 # Keys added to the session JSON later, with the value that reproduces older sessions (not in _META_KEYS)
 _META_DEFAULTS: dict[str, Any] = {
     "tags": [],  # tag list of the session, its order numbers the tag shortcuts
+    "morphospecies": [],  # morphospecies list of the session: {'genus', 'name'} in the order added
 }
 
 # Separator of the track IDs in a 'same_individual_as' value
@@ -273,6 +286,10 @@ class Verdict:
         """Return the ranks with a taxon name (not empty, not indet.)."""
         return [r for r in VALIDATION_RANKS if self.val.get(r) not in (None, "", INDET_LABEL)]
 
+    def morphospecies(self) -> str | None:
+        """Return the morphospecies label, None for a false positive or a determination that cannot carry one."""
+        return None if self.false_positive else allowed_morphospecies(self.val)
+
 
 def parse_links(value: str | None) -> list[str]:
     """Return the track IDs stored in a 'same_individual_as' value ('1;3' -> ['1', '3'])."""
@@ -375,6 +392,52 @@ def qualifier_mark(qualifier: str | None, lowest_rank: str | None) -> str | None
     if has_qualifier(qualifier, ID_QUALIFIER_AGG):
         marks.append(ID_QUALIFIER_AGG)
     return " ".join(marks) or None
+
+
+def normalize_morphospecies(text: str) -> str:
+    """Return a morphospecies name as stored: single spaces, no leading 'sp.', at most
+    VALIDATION_MORPHOSPECIES_MAX_CHARS characters ('sp. red  tailed' -> 'red tailed')."""
+    words = text.split()
+    if words and words[0].casefold() in (_MORPHOSPECIES_MARK, _MORPHOSPECIES_MARK.rstrip(".")):
+        words = words[1:]
+    return " ".join(words)[:VALIDATION_MORPHOSPECIES_MAX_CHARS].strip()
+
+
+def morphospecies_label(genus: str, name: str) -> str:
+    """Return the label of a morphospecies in open nomenclature, e.g. 'Bombus sp. red-tailed'."""
+    return f"{genus} {_MORPHOSPECIES_MARK} {name}"
+
+
+def morphospecies_name(label: str | None, genus: str | None) -> str | None:
+    """Return the name of a morphospecies label of 'genus' ('Bombus sp. red-tailed' -> 'red-tailed'), else None."""
+    prefix = f"{genus} {_MORPHOSPECIES_MARK} "
+    if not label or not genus or not label.startswith(prefix):
+        return None
+    return label[len(prefix):] or None
+
+
+def allowed_morphospecies(val: Mapping[str, str | None]) -> str | None:
+    """Return the morphospecies label of a determination, None unless its genus is determined and its species is not.
+
+    A label of another genus is no morphospecies of this determination (the genus was changed after it was set).
+    """
+    genus, species = val.get("genus"), val.get("species")
+    if genus in (None, "", INDET_LABEL) or species not in (None, "", INDET_LABEL):
+        return None
+    label = val.get(MORPHOSPECIES_KEY)
+    return label if morphospecies_name(label, genus) else None
+
+
+def apply_morphospecies_rule(verdict: Verdict) -> None:
+    """Drop a morphospecies the determination cannot carry, and the qualifiers a morphospecies cannot carry.
+
+    A morphospecies needs a determined genus and an undetermined species. 'inc.' and 'agg.' are not used with it, so
+    'val_qualifier' always refers to a taxon rank.
+    """
+    if allowed_morphospecies(verdict.val) is None:
+        verdict.val.pop(MORPHOSPECIES_KEY, None)
+    else:
+        verdict.qualifier = None
 
 
 def derive_verdict(
@@ -534,7 +597,7 @@ class ValidationSession:
             result.append({
                 **{key: meta[key] for key in ("validator", "validation_session_id", "started", "updated", "blind",
                                               "final_csv", "sampling", "n_sampled", "n_validated",
-                                              "prefilled_from_sessions", "tags")},
+                                              "prefilled_from_sessions", "tags", "morphospecies")},
                 "csv_path": json_path.with_name(f"{stem}{_SESSION_CSV_SUFFIX}"),
             })
         result.sort(key=lambda s: s["updated"], reverse=True)
@@ -550,6 +613,7 @@ class ValidationSession:
         taxonomy: TaxonomyIndex,
         blind: bool = False,
         tags: Sequence[str] = (),
+        morphospecies: Sequence[Mapping[str, str]] = (),
     ) -> ValidationSession:
         """Create a new session from sampled tracks.
 
@@ -561,6 +625,7 @@ class ValidationSession:
             taxonomy: Maps model species to canonical names.
             blind: Hide the model prediction until a determination is entered.
             tags: Starting tag list, in shortcut order.
+            morphospecies: Starting morphospecies list ({'genus', 'name'}).
 
         Returns:
             New unsaved session.
@@ -628,6 +693,8 @@ class ValidationSession:
         session = cls(run.root, validator, base, meta)
         for tag in tags:
             session.add_tag(tag)
+        for entry in morphospecies:
+            session.add_morphospecies(entry["genus"], entry["name"])
         session.unsaved = True
         return session
 
@@ -666,6 +733,9 @@ class ValidationSession:
         session = cls(run_root, validator, base, meta)
         for row in df.select([*TRACK_KEY_COLUMNS, *_VERDICT_COLUMNS]).iter_rows(named=True):
             key: TrackKey = tuple(row[c] for c in TRACK_KEY_COLUMNS)  # type: ignore[assignment]
+            val = {r: (row.get(f"val_{r}") or None) for r in VALIDATION_RANKS}
+            if morphospecies := row.get("val_morphospecies"):
+                val[MORPHOSPECIES_KEY] = morphospecies
             verdict = Verdict(
                 validated=str(row.get("validated") or "").lower() == "true",
                 validated_at=row.get("validated_at") or None,
@@ -674,7 +744,7 @@ class ValidationSession:
                 image_quality_reason=row.get("image_quality_reason") or None,
                 multiple_individuals=row.get("multiple_individuals") or None,
                 same_individual_as=row.get("same_individual_as") or None,
-                val={r: (row.get(f"val_{r}") or None) for r in VALIDATION_RANKS},
+                val=val,
                 val_source=row.get("val_source") or None,
                 qualifier=row.get("val_qualifier") or None,
                 sex=row.get("val_sex") or None,
@@ -957,6 +1027,84 @@ class ValidationSession:
             self.unsaved = True
         return keys
 
+    def morphospecies(self, genus: str) -> list[str]:
+        """Return the morphospecies names listed for a genus, in the order added."""
+        return [entry["name"] for entry in self.meta["morphospecies"] if entry["genus"] == genus]
+
+    def add_morphospecies(self, genus: str, text: str) -> str | None:
+        """Add a morphospecies of a genus to the list, unless it is there already (ignoring case).
+
+        Returns:
+            The name as listed (the existing spelling of a known one), None if 'text' holds none.
+        """
+        name = normalize_morphospecies(text)
+        if not genus or genus == INDET_LABEL or not name:
+            return None
+        if known := next((n for n in self.morphospecies(genus) if n.casefold() == name.casefold()), None):
+            return known
+        self.meta["morphospecies"].append({"genus": genus, "name": name})
+        self.unsaved = True
+        return name
+
+    def morphospecies_keys(self, genus: str, name: str) -> list[TrackKey]:
+        """Return the validated tracks determined as a morphospecies of a genus (ignoring case)."""
+        return [key for key, entry in self.verdicts.items()
+                if entry.validated and entry.val.get("genus") == genus
+                and (morphospecies_name(entry.morphospecies(), genus) or "").casefold() == name.casefold()]
+
+    def morphospecies_overview(self) -> list[tuple[str, str, int]]:
+        """Return every listed morphospecies as '(genus, name, tracks of this session)', sorted by genus then name."""
+        entries = sorted(self.meta["morphospecies"], key=lambda e: (e["genus"].casefold(), e["name"].casefold()))
+        return [(e["genus"], e["name"], len(self.morphospecies_keys(e["genus"], e["name"]))) for e in entries]
+
+    def rename_morphospecies(self, genus: str, old: str, text: str) -> list[TrackKey]:
+        """Rename a listed morphospecies of a genus in the list and on the tracks of this session.
+
+        A name already listed for the genus merges the two: the old entry is removed and its tracks take that name.
+
+        Returns:
+            The tracks changed.
+        """
+        new = normalize_morphospecies(text)
+        entries: list[dict[str, str]] = self.meta["morphospecies"]
+        entry = next((e for e in entries if e["genus"] == genus and e["name"] == old), None)
+        if not new or entry is None or new == old:
+            return []
+        target = next((e for e in entries if e is not entry and e["genus"] == genus
+                       and e["name"].casefold() == new.casefold()), None)
+        if target is not None:
+            new = target["name"]
+            entries.remove(entry)
+        else:
+            entry["name"] = new
+        self.unsaved = True
+        keys = self.morphospecies_keys(genus, old)
+        label = morphospecies_label(genus, new)
+        for key in keys:
+            changed = self.verdicts[key].copy()
+            changed.val[MORPHOSPECIES_KEY] = label
+            self.set_verdict(key, changed)
+        return keys
+
+    def delete_morphospecies(self, genus: str, name: str) -> list[TrackKey]:
+        """Remove a morphospecies of a genus from the list and from every track of this session that carries it.
+
+        The tracks keep the rest of their determination (the genus, species stays 'indet.').
+
+        Returns:
+            The tracks it was removed from.
+        """
+        keys = self.morphospecies_keys(genus, name)
+        for key in keys:
+            changed = self.verdicts[key].copy()
+            changed.val.pop(MORPHOSPECIES_KEY, None)
+            self.set_verdict(key, changed)
+        entry = {"genus": genus, "name": name}
+        if entry in self.meta["morphospecies"]:
+            self.meta["morphospecies"].remove(entry)
+            self.unsaved = True
+        return keys
+
     def seconds_spent(self, key: TrackKey) -> float | None:
         """Return the validation effort of a track (also without a verdict), None if none was recorded."""
         entry = self.verdicts.get(key)
@@ -1023,10 +1171,18 @@ class ValidationSession:
 
     def _store(self, key: TrackKey, verdict: Verdict) -> None:
         """Store a verdict and update the indexes."""
+        apply_morphospecies_rule(verdict)
         previous = self._remove(key)
         self.verdicts[key] = verdict
-        # A tag of a track is always listed (also one pre-filled from another session)
+        # A tag of a track is always listed (also one pre-filled from another session), as is its morphospecies
         self.meta["tags"].extend(tag for tag in verdict.tags if tag not in self.meta["tags"])
+        if label := verdict.morphospecies():
+            genus = str(verdict.val["genus"])
+            # Stored in the list's spelling (a pre-filled or hand-edited label may differ in case or spaces)
+            if name := self.add_morphospecies(genus, morphospecies_name(label, genus) or ""):
+                verdict.val[MORPHOSPECIES_KEY] = morphospecies_label(genus, name)
+            else:
+                verdict.val.pop(MORPHOSPECIES_KEY)
         if not verdict.false_positive:
             for other in parse_links(verdict.same_individual_as):
                 self._successors.setdefault((key[0], key[1], other), set()).add(key[2])
@@ -1070,7 +1226,8 @@ class ValidationSession:
             verdict_type, agree_rank, lowest = derive_verdict(self.model_lineage(key), verdict, self.model_rank)
             event.update({
                 "verdict": verdict_type, "agree_rank": agree_rank, "val_lowest_rank": lowest,
-                "val": {r: verdict.val.get(r) for r in VALIDATION_RANKS},
+                "val": {**{r: verdict.val.get(r) for r in VALIDATION_RANKS},
+                        MORPHOSPECIES_KEY: verdict.morphospecies()},
                 "image_quality": verdict.image_quality, "image_quality_reason": verdict.image_quality_reason,
                 "multiple_individuals": verdict.multiple_individuals,
                 "same_individual_as": verdict.same_individual_as,
@@ -1130,6 +1287,7 @@ def verdict_columns(
     }
     for rank in VALIDATION_RANKS:
         row[f"val_{rank}"] = (verdict.val.get(rank) or None) if verdict and not verdict.false_positive else None
+    row["val_morphospecies"] = verdict.morphospecies() if verdict else None
     return row
 
 
@@ -1150,6 +1308,7 @@ def validated_frame(
 
     Adds 'combined_<rank>' (validator's names for validated tracks, indet. empty and an aggregate
     species with ' agg.', else the model's, its species as GBIF canonical name like the comparison),
+    'combined_morphospecies' after 'combined_species' (the validator's morphospecies, the model never has one),
     'combined_source' and 'individual_id' / 'individual_n_tracks'. The final CSV's 'gbif_species'
     and 'gbif_species_key' come along; a validator's species gets its key by joining
     'combined_species' with 'gbif_species' of the species mapping.
@@ -1194,6 +1353,12 @@ def validated_frame(
             .otherwise(model_expr)
             .alias(f"combined_{rank}")
         )
+        if rank == "species":
+            combined_cols.append(
+                pl.when(validated & ~false_positive.fill_null(False)).then(pl.col("val_morphospecies"))
+                .otherwise(pl.lit(None, dtype=pl.String))
+                .alias("combined_morphospecies")
+            )
     exported = exported.with_columns(combined_cols).with_columns(
         pl.when(false_positive).then(pl.lit("false_positive"))
         .when(validated).then(pl.lit("human"))
