@@ -26,7 +26,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 from insectdetect_post.constants import BASE_PATH, COLOR_BTN_UPDATE
 from insectdetect_post.styled_button import StyledButton
 from insectdetect_post.update import UpdateInfo, sync_command
-from insectdetect_post.update_runner import UpdateChecker, UpdateInstaller
+from insectdetect_post.update_worker import UpdateChecker, UpdateInstaller
 
 # Create module-level logger
 logger = logging.getLogger(__name__)

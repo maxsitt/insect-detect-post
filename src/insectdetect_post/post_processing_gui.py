@@ -80,7 +80,7 @@ from insectdetect_post.constants import (
     PROG_BAR_STYLESHEET,
 )
 from insectdetect_post.dataset_context import DatasetContext
-from insectdetect_post.dataset_inspector import DatasetInspector
+from insectdetect_post.dataset_worker import DatasetInspector
 from insectdetect_post.gui_utils import (
     active_theme,
     create_groupbox,
