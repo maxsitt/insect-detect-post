@@ -98,6 +98,7 @@ from insectdetect_post.pipeline_setup import (
     adapt_run_config,
     available_models,
     check_run_config,
+    cuda_available,
     resolve_and_validate_path,
     validate_paths,
 )
@@ -256,13 +257,8 @@ class ConfigWidget(QWidget):
         self.status_updated.emit("Checking GPU availability and loading config...")
         QApplication.processEvents()
 
-        try:
-            import torch
-            self._cuda_available = torch.cuda.is_available()
-            logger.info("GPU/CUDA %s", "available" if self._cuda_available else "not available")
-        except ImportError:
-            self._cuda_available = False
-            logger.info("PyTorch not installed, CUDA disabled")
+        self._cuda_available = cuda_available()
+        logger.info("GPU/CUDA %s", "available" if self._cuda_available else "not available")
 
         self.gpu_checkbox.setEnabled(self._cuda_available)
         self._load_config(self.config_active)

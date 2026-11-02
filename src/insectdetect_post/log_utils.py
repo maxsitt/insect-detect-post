@@ -14,7 +14,7 @@ Classes:
     LogFormatter: Formatter for the shared log layout.
 
 Functions:
-    configure_logging(): Configure logging for a GUI entry point.
+    configure_logging(): Configure logging for an entry point.
     open_log_file(): Attach a log file that records this package and warnings of other packages.
     close_log_file(): Detach and close a handler from open_log_file().
 """
@@ -63,14 +63,20 @@ class LogFormatter(logging.Formatter):
         return super().format(record)
 
 
-def configure_logging() -> None:
-    """Configure logging for a GUI entry point.
+def configure_logging(console_level: int = logging.INFO) -> None:
+    """Configure logging for an entry point.
 
     Terminal output with the shared layout; this package at DEBUG, the noisy loggers of other
-    packages (_QUIET_LOGGERS) at WARNING, everything else at INFO.
+    packages (_QUIET_LOGGERS) at WARNING, everything else at INFO. The terminal only shows
+    records from console_level, while other handlers (log viewer, log files) still receive
+    the DEBUG records of this package.
+
+    Args:
+        console_level: Lowest level shown in the terminal.
     """
     handler = logging.StreamHandler()
     handler.setFormatter(LogFormatter())
+    handler.setLevel(console_level)
     # 'pygbif' calls logging.basicConfig() on import: 'force=True' replaces the handler it installed
     logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
     logging.getLogger(_PACKAGE_LOGGER).setLevel(logging.DEBUG)

@@ -18,11 +18,13 @@ Functions:
     validate_paths(): Check the source and output directories of a run.
     adapt_run_config(): Adapt a config to what a dataset supports.
     available_models(): Return the model files that can be selected in a config.
+    cuda_available(): Return True if PyTorch is installed with CUDA support and a GPU is available.
     check_run_config(): Check what would otherwise only fail once the run has started.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -31,6 +33,9 @@ from insectdetect_post.asset_manager import list_registered_filenames
 from insectdetect_post.config import AppConfig
 from insectdetect_post.constants import MODELS_JSON, MODELS_PATH
 from insectdetect_post.dataset_context import DatasetContext
+
+# Create module-level logger
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -200,13 +205,23 @@ def available_models() -> list[str]:
     return sorted(local_models | registered_models)
 
 
+def cuda_available() -> bool:
+    """Return True if PyTorch is installed with CUDA support and a GPU is available."""
+    try:
+        import torch
+    except ImportError:
+        logger.debug("PyTorch is not installed, CUDA is not available")
+        return False
+    return torch.cuda.is_available()
+
+
 def check_run_config(config: AppConfig, context: DatasetContext) -> str | None:
     """Check what would otherwise only fail once the run has started.
 
-    The dataset needs metadata (every run starts by merging it), and the model of an enabled
-    'classification.ultralytics' has to be available (it is loaded only after image processing).
-    Pass the config returned by adapt_run_config(), so a classifier the dataset rules switched
-    off is not checked.
+    The dataset needs metadata (every run starts by merging it), device 'cuda' needs an available
+    GPU, and the model of an enabled 'classification.ultralytics' has to be available (it is loaded
+    only after image processing). Pass the config returned by adapt_run_config(), so a classifier
+    the dataset rules switched off is not checked.
 
     Args:
         config: Configuration of the run, adapted to the dataset by adapt_run_config().
@@ -217,6 +232,9 @@ def check_run_config(config: AppConfig, context: DatasetContext) -> str | None:
     """
     if not DatasetCapabilities.from_context(context).can_run:
         return "The dataset has no metadata files, so nothing can be processed."
+    if config.device == "cuda" and not cuda_available():
+        return ("The config uses device 'cuda', but no GPU with CUDA is available "
+                "(or PyTorch is installed without CUDA support). Set 'device: cpu' to run on the CPU.")
     ultralytics = config.classification.ultralytics
     if ultralytics.enabled:
         models = available_models()

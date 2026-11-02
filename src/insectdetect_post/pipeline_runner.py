@@ -168,39 +168,7 @@ class PipelineRunner:
             # Create merged metadata
             self._merged_metadata_path_value = self._create_merged_metadata()
 
-            # Determine steps
-            steps = []
-            ultralytics_enabled = self.config.classification.ultralytics.enabled
-            bioclip_enabled = self.config.classification.bioclip.enabled
-            classification_enabled = ultralytics_enabled or bioclip_enabled
-
-            # Step 1: Image Processing
-            if self._should_process_images():
-                steps.append(("Image Processing", self._process_images))
-
-            # Step 2: Classification
-            if ultralytics_enabled:
-                steps.append(("Ultralytics Classification", self._run_ultralytics_classification))
-            elif bioclip_enabled:
-                steps.append(("BioCLIP Classification", self._run_bioclip_classification))
-
-            # Step 3: Metadata Processing (aggregates classification results)
-            meta_config = self.config.metadata
-            if classification_enabled:
-                steps.append(("Metadata Processing", self._process_metadata))
-            elif (meta_config.filter_crops.enabled or meta_config.filter_tracks.enabled
-                  or meta_config.estimate_size.enabled):
-                logger.warning(
-                    "Metadata settings are enabled but no classifier is - metadata processing "
-                    "aggregates classification results and will be skipped"
-                )
-
-            # Step 4: Sort crops (only if classification was done)
-            if classification_enabled and self.config.classification.sort_crops.enabled:
-                steps.append(("Sort Crops by Individual Prediction", self._sort_crops_wrapper))
-            elif classification_enabled and self.config.classification.sort_tracks.enabled:
-                steps.append(("Sort Tracks by Final Prediction", self._sort_tracks_wrapper))
-
+            steps = self._plan_steps()
             if not steps:
                 logger.warning("No processing steps enabled")
                 return self.output_root
@@ -263,6 +231,55 @@ class PipelineRunner:
         if not self._cancelled:
             self._cancelled = True
             logger.info("Pipeline cancellation requested")
+
+
+    def planned_steps(self) -> list[str]:
+        """Return the names of the steps a run would execute, without running anything.
+
+        Requires the dataset context (passed to __init__), as image processing depends on it.
+        """
+        return [name for name, _ in self._plan_steps()]
+
+
+    def _plan_steps(self) -> list[tuple[str, Callable[[], None]]]:
+        """Determine the enabled steps of the run in their order.
+
+        Returns:
+            List of (step name, step function) tuples.
+        """
+        steps: list[tuple[str, Callable[[], None]]] = []
+        ultralytics_enabled = self.config.classification.ultralytics.enabled
+        bioclip_enabled = self.config.classification.bioclip.enabled
+        classification_enabled = ultralytics_enabled or bioclip_enabled
+
+        # Step 1: Image Processing
+        if self._should_process_images():
+            steps.append(("Image Processing", self._process_images))
+
+        # Step 2: Classification
+        if ultralytics_enabled:
+            steps.append(("Ultralytics Classification", self._run_ultralytics_classification))
+        elif bioclip_enabled:
+            steps.append(("BioCLIP Classification", self._run_bioclip_classification))
+
+        # Step 3: Metadata Processing (aggregates classification results)
+        meta_config = self.config.metadata
+        if classification_enabled:
+            steps.append(("Metadata Processing", self._process_metadata))
+        elif (meta_config.filter_crops.enabled or meta_config.filter_tracks.enabled
+              or meta_config.estimate_size.enabled):
+            logger.warning(
+                "Metadata settings are enabled but no classifier is - metadata processing "
+                "aggregates classification results and will be skipped"
+            )
+
+        # Step 4: Sort crops (only if classification was done)
+        if classification_enabled and self.config.classification.sort_crops.enabled:
+            steps.append(("Sort Crops by Individual Prediction", self._sort_crops_wrapper))
+        elif classification_enabled and self.config.classification.sort_tracks.enabled:
+            steps.append(("Sort Tracks by Final Prediction", self._sort_tracks_wrapper))
+
+        return steps
 
 
     def _ensure_context(self) -> DatasetContext:

@@ -602,7 +602,7 @@ def load_config_selector() -> ConfigSelectorModel:
     return selector
 
 
-def load_config_yaml(config_path: Path, write_back: bool = True) -> AppConfig:
+def load_config_yaml(config_path: Path, write_back: bool = True, strict: bool = False) -> AppConfig:
     """Load a YAML config file, clamp out-of-range values and return a validated AppConfig.
 
     Missing keys are filled with Pydantic defaults. Settings of older config versions
@@ -614,6 +614,10 @@ def load_config_yaml(config_path: Path, write_back: bool = True) -> AppConfig:
         write_back: If True, write the validated config back to the file when it differs
                     (e.g. moved, clamped, missing or unknown keys). If False, the file is
                     never changed.
+        strict: If True, unknown keys are an error instead of a warning.
+
+    Raises:
+        ValueError: If the config is invalid, or with strict, if it has unknown keys.
 
     Returns:
         Validated AppConfig (with write_back, also the new content of the file).
@@ -629,6 +633,11 @@ def load_config_yaml(config_path: Path, write_back: bool = True) -> AppConfig:
         )
 
     unknown = _find_unknown_keys(raw, AppConfig)
+    if unknown and strict:
+        raise ValueError(
+            f"Unknown config keys in '{config_path}' (misspelled, or from another version?):\n"
+            + "\n".join(unknown)
+        )
     if unknown:
         logger.warning(
             "Unknown config keys in '%s' are ignored%s (misspelled, or from another version?):\n%s",
