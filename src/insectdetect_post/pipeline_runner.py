@@ -7,8 +7,9 @@ AI use:   Developed with AI coding assistance, reviewed by the author
 Docs:     https://maxsitt.github.io/insect-detect-docs/
 
 Runs image processing, classification, metadata processing/aggregation, and crop sorting
-in sequence, skipping steps disabled in the config. Emits Qt signals for progress and
-completion/error status so the GUI can track a run without blocking.
+in sequence, skipping steps disabled in the config. Free of Qt, so the pipeline can also run
+without a GUI: progress is reported through optional callbacks, and the result of a run is
+its return value or raised exception.
 
 Classes:
     PipelineRunner: Runs pipeline steps with progress reporting and cancellation support.
@@ -28,7 +29,6 @@ from typing import Any
 
 import cv2
 import polars as pl
-from PySide6.QtCore import QObject, Signal
 
 from insectdetect_post.asset_manager import ensure_asset
 from insectdetect_post.classifier_utils import parse_crop_name
@@ -51,18 +51,20 @@ from insectdetect_post.metadata_processor import process_metadata_classified
 logger = logging.getLogger(__name__)
 
 
-class PipelineRunner(QObject):
-    """Runs pipeline steps with progress reporting and cancellation support."""
-    progress = Signal(int)
-    progress_message = Signal(str)
-    finished = Signal()
-    error = Signal(str)
+class PipelineRunner:
+    """Runs pipeline steps with progress reporting and cancellation support.
+
+    'on_progress' receives the progress of the current step (0-100) and 'on_message' a status
+    message. Both are optional and may also be set after construction.
+    """
 
     def __init__(
         self,
         config: AppConfig,
         config_stem: str = "config",
-        context: DatasetContext | None = None
+        context: DatasetContext | None = None,
+        on_progress: Callable[[int], None] | None = None,
+        on_message: Callable[[str], None] | None = None,
     ) -> None:
         """Initialize the pipeline runner for a single run.
 
@@ -70,16 +72,19 @@ class PipelineRunner(QObject):
             config: Fully resolved app configuration for this run.
             config_stem: Filename stem of the active config file.
             context: Pre-scanned dataset context, if already available.
+            on_progress: Optional callback receiving the progress of the current step (0-100).
+            on_message: Optional callback receiving status messages.
 
         Raises:
             RuntimeError: If config.source_path is not set.
         """
-        super().__init__()
         if not config.source_path:
             raise RuntimeError("source_path is not configured")
         self.source_dir = Path(config.source_path)
         self.config = config
         self.config_stem = config_stem
+        self.on_progress = on_progress
+        self.on_message = on_message
         self._context: DatasetContext | None = context
         self._cancelled = False
         self._output_root: Path | None = None
@@ -132,8 +137,16 @@ class PipelineRunner(QObject):
         return self._layout
 
 
-    def run(self) -> None:
-        """Execute complete post-processing pipeline with progress reporting."""
+    def run(self) -> Path:
+        """Execute complete post-processing pipeline with progress reporting.
+
+        Returns:
+            The output root directory of this run.
+
+        Raises:
+            PipelineCancelled: If the run was cancelled with cancel().
+            Exception: Any error that stopped the run (logged to the run log before it is raised).
+        """
         log_file_handler = None
 
         try:
@@ -189,8 +202,7 @@ class PipelineRunner(QObject):
 
             if not steps:
                 logger.warning("No processing steps enabled")
-                self.finished.emit()
-                return
+                return self.output_root
 
             logger.info("Enabled steps: %s", ', '.join(name for name, _ in steps))
 
@@ -211,7 +223,7 @@ class PipelineRunner(QObject):
 
                 self._current_step_index = i
                 logger.info("Step %d/%d: %s", i + 1, len(steps), step_name)
-                self.progress_message.emit(f"Step {i+1}/{len(steps)}: {step_name}")
+                self._report(message=f"Step {i+1}/{len(steps)}: {step_name}")
 
                 step_start = time.time()
                 step_func()
@@ -232,16 +244,15 @@ class PipelineRunner(QObject):
             logger.info("Total time: %.1fs", pipeline_stats['total_duration_seconds'])
             logger.info("=" * 60)
 
-            self.progress.emit(100)
-            self.progress_message.emit("Pipeline completed")
-            self.finished.emit()
+            self._report(100, "Pipeline completed")
+            return self.output_root
 
         except PipelineCancelled:
             logger.info("Pipeline cancelled")
-            self.error.emit("Pipeline cancelled")
-        except Exception as e:
+            raise
+        except Exception:
             logger.exception("Pipeline error")
-            self.error.emit(str(e))
+            raise
         finally:
             close_log_file(log_file_handler)
 
@@ -350,12 +361,16 @@ class PipelineRunner(QObject):
         """
         if self._cancelled:
             raise PipelineCancelled()
-        self.progress.emit(current)
-        if self._total_steps > 0:
-            step_label = f"[{self._current_step_index + 1}/{self._total_steps}] "
-            self.progress_message.emit(step_label + message)
-        else:
-            self.progress_message.emit(message)
+        step_label = f"[{self._current_step_index + 1}/{self._total_steps}] " if self._total_steps > 0 else ""
+        self._report(current, step_label + message)
+
+
+    def _report(self, progress: int | None = None, message: str | None = None) -> None:
+        """Pass progress and/or a status message to the callbacks that are set."""
+        if progress is not None and self.on_progress is not None:
+            self.on_progress(progress)
+        if message is not None and self.on_message is not None:
+            self.on_message(message)
 
 
     def _should_process_images(self) -> bool:

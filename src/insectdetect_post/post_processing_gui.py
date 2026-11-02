@@ -94,6 +94,7 @@ from insectdetect_post.gui_utils import (
 )
 from insectdetect_post.log_utils import LogFormatter, configure_logging
 from insectdetect_post.pipeline_runner import PipelineRunner
+from insectdetect_post.pipeline_worker import PipelineWorker
 from insectdetect_post.styled_button import StyledButton
 from insectdetect_post.update_button import UpdateButton
 from insectdetect_post.validation_gui import ValidationWindow
@@ -1305,7 +1306,7 @@ class MainWindow(QMainWindow):
         """Initialize the main application window."""
         super().__init__()
         self._pipeline_thread: QThread | None = None
-        self._pipeline_runner: PipelineRunner | None = None
+        self._pipeline_worker: PipelineWorker | None = None
         self._inspection_active: bool = False
         self._validation_window: ValidationWindow | None = None
         self._last_run_root: Path | None = None
@@ -1618,9 +1619,9 @@ class MainWindow(QMainWindow):
             self._pipeline_thread.wait(1000)
             self._pipeline_thread.deleteLater()
             self._pipeline_thread = None
-        if self._pipeline_runner:
-            self._pipeline_runner.deleteLater()
-            self._pipeline_runner = None
+        if self._pipeline_worker:
+            self._pipeline_worker.deleteLater()
+            self._pipeline_worker = None
 
         # Prompt to save only if there are unsaved changes
         if self.config_widget.has_unsaved_changes():
@@ -1665,21 +1666,21 @@ class MainWindow(QMainWindow):
         if context is None:
             logger.warning("No cached dataset context, will scan during pipeline run")
 
-        # Create pipeline runner
+        # Create pipeline runner and the worker that runs it in the pipeline thread
         config_stem = Path(self.config_widget.config_active).stem
-        self._pipeline_runner = PipelineRunner(
+        self._pipeline_worker = PipelineWorker(PipelineRunner(
             config,
             config_stem=config_stem,
             context=context
-        )
-        self._pipeline_runner.moveToThread(self._pipeline_thread)
+        ))
+        self._pipeline_worker.moveToThread(self._pipeline_thread)
 
         # Connect signals
-        self._pipeline_thread.started.connect(self._pipeline_runner.run)
-        self._pipeline_runner.progress.connect(self.progress_bar.setValue)
-        self._pipeline_runner.progress_message.connect(self.progress_label.setText)
-        self._pipeline_runner.finished.connect(self._on_pipeline_finish)
-        self._pipeline_runner.error.connect(self._on_pipeline_error)
+        self._pipeline_thread.started.connect(self._pipeline_worker.run)
+        self._pipeline_worker.progress.connect(self.progress_bar.setValue)
+        self._pipeline_worker.progress_message.connect(self.progress_label.setText)
+        self._pipeline_worker.finished.connect(self._on_pipeline_finish)
+        self._pipeline_worker.error.connect(self._on_pipeline_error)
 
         # Update UI state
         self.run_btn.setEnabled(False)
@@ -1698,9 +1699,9 @@ class MainWindow(QMainWindow):
         """Cancel whichever task is currently running: pipeline or dataset inspection."""
         self.cancel_btn.setEnabled(False)
 
-        if self._pipeline_runner and self._is_pipeline_running:
+        if self._pipeline_worker and self._is_pipeline_running:
             self.progress_label.setText("Cancelling pipeline...")
-            self._pipeline_runner.cancel()
+            self._pipeline_worker.cancel()
         else:
             self.progress_label.setText("Cancelling inspection...")
             self.config_widget.cancel_inspection()
@@ -1721,8 +1722,8 @@ class MainWindow(QMainWindow):
         """Handle pipeline completion with comprehensive cleanup."""
         logger.info("Cleaning up pipeline...")
 
-        # Remember the run directory before the runner is deleted (None if the run failed or was cancelled)
-        run_root = self._pipeline_runner.output_root if self._pipeline_runner and not self._pipeline_failed else None
+        # Remember the run directory before the worker is deleted (None if the run failed or was cancelled)
+        run_root = self._pipeline_worker.output_root if self._pipeline_worker and not self._pipeline_failed else None
         self._pipeline_failed = False
 
         # Clean up thread
@@ -1740,10 +1741,10 @@ class MainWindow(QMainWindow):
             self._pipeline_thread.deleteLater()
             self._pipeline_thread = None
 
-        # Clean up pipeline runner
-        if self._pipeline_runner:
-            self._pipeline_runner.deleteLater()
-            self._pipeline_runner = None
+        # Clean up pipeline worker
+        if self._pipeline_worker:
+            self._pipeline_worker.deleteLater()
+            self._pipeline_worker = None
 
         # Reset UI state
         self.cancel_btn.setEnabled(False)
@@ -1791,16 +1792,16 @@ class MainWindow(QMainWindow):
             if reply == QMessageBox.StandardButton.Yes:
                 # Disconnect signals first to prevent callbacks during shutdown
                 try:
-                    if self._pipeline_runner:
-                        self._pipeline_runner.progress.disconnect()
-                        self._pipeline_runner.progress_message.disconnect()
-                        self._pipeline_runner.finished.disconnect()
-                        self._pipeline_runner.error.disconnect()
+                    if self._pipeline_worker:
+                        self._pipeline_worker.progress.disconnect()
+                        self._pipeline_worker.progress_message.disconnect()
+                        self._pipeline_worker.finished.disconnect()
+                        self._pipeline_worker.error.disconnect()
                 except (RuntimeError, AttributeError):
                     pass
 
-                if self._pipeline_runner:
-                    self._pipeline_runner.cancel()
+                if self._pipeline_worker:
+                    self._pipeline_worker.cancel()
 
                 if self._pipeline_thread:
                     self._pipeline_thread.quit()
@@ -1810,8 +1811,8 @@ class MainWindow(QMainWindow):
                         self._pipeline_thread.wait(500)
 
                 # Clean up objects
-                if self._pipeline_runner:
-                    self._pipeline_runner.deleteLater()
+                if self._pipeline_worker:
+                    self._pipeline_worker.deleteLater()
                 if self._pipeline_thread:
                     self._pipeline_thread.deleteLater()
             else:
