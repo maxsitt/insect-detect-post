@@ -12,6 +12,7 @@ Classes:
 Functions:
     get_field_constraints(): Extract numeric constraints for a nested field from a Pydantic model.
     get_field_literals(): Extract allowed Literal values for a nested field from a Pydantic model.
+    deep_update(): Recursively merge a nested dict of updates into a base dict, in-place.
     ensure_config_files(): Create the default config and config selector file if they are missing.
     load_config_selector(): Load the config selector file and return a validated ConfigSelectorModel.
     load_config_yaml(): Load a YAML config file, clamp out-of-range values and return a validated AppConfig.
@@ -505,8 +506,8 @@ def _migrate_raw(raw: dict[str, object]) -> list[str]:
     return messages + track_messages
 
 
-def _deep_update(base: dict[str, object], updates: dict[str, object]) -> None:
-    """Recursively merge updates into base dict in-place.
+def deep_update(base: dict[str, object], updates: dict[str, object]) -> None:
+    """Recursively merge a nested dict of updates into a base dict, in-place.
 
     Nested dicts are merged rather than replaced. All other value
     types (including lists) are overwritten directly.
@@ -514,7 +515,7 @@ def _deep_update(base: dict[str, object], updates: dict[str, object]) -> None:
     for key, value in updates.items():
         base_value = base.get(key)
         if isinstance(value, dict) and isinstance(base_value, dict):
-            _deep_update(base_value, value)
+            deep_update(base_value, value)
             base[key] = base_value
         else:
             base[key] = value
@@ -662,7 +663,7 @@ def update_config_yaml(config_path: Path, config_updates: dict[str, object]) -> 
 
     If the file does not exist (e.g. when creating a new config), an empty base
     dict is used and config_updates is written as-is. Otherwise the current file
-    is read first and config_updates is merged into it recursively via _deep_update().
+    is read first and config_updates is merged into it recursively via deep_update().
     The result is written back and immediately re-validated, which fills any missing
     keys with Pydantic defaults and clamps out-of-range values.
 
@@ -679,7 +680,7 @@ def update_config_yaml(config_path: Path, config_updates: dict[str, object]) -> 
         _migrate_raw(raw)  # before merging, so older keys cannot override the updates
     else:
         raw = {}
-    _deep_update(raw, config_updates)
+    deep_update(raw, config_updates)
     with open(config_path, "w", encoding="utf-8") as f:
         yaml.dump(raw, f, **_YAML_DUMP_KWARGS)
 

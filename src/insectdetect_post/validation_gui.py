@@ -162,10 +162,10 @@ from insectdetect_post.gui_utils import (
     create_groupbox,
     create_num_param,
     load_theme,
-    resolve_and_validate_path,
     save_theme,
 )
 from insectdetect_post.log_utils import close_log_file, configure_logging, open_log_file
+from insectdetect_post.pipeline_setup import resolve_and_validate_path
 from insectdetect_post.styled_button import StyledButton
 from insectdetect_post.update_button import UpdateButton
 from insectdetect_post.validation_multi import (

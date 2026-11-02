@@ -7,8 +7,8 @@ AI use:   Developed with AI coding assistance, reviewed by the author
 Docs:     https://maxsitt.github.io/insect-detect-docs/
 
 Provides the theme persistence shared by the processing and validation GUIs,
-styled widget and parameter form factories, conversion between nested config
-dicts and flat ParameterForm values, and source/output path validation.
+styled widget and parameter form factories, and conversion between nested
+config dicts and flat ParameterForm values.
 
 Functions:
     active_theme(): Return the applied theme, or the default theme before one is applied.
@@ -19,13 +19,11 @@ Functions:
     create_num_param(): Create a numeric parameter with slider.
     extract_enabled_values(): Extract enabled flags from nested dicts for ParameterForm compatibility.
     restore_enabled_values(): Restore enabled flags back into nested dicts for YAML compatibility.
-    resolve_and_validate_path(): Resolve and validate a path string.
 """
 
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Any, Literal
 
 import qt_themes
@@ -227,26 +225,3 @@ def restore_enabled_values(config: dict[str, Any]) -> dict[str, Any]:
             else:
                 result[key] = value
     return result
-
-
-def resolve_and_validate_path(path_str: str) -> Path | None:
-    """Resolve and validate a path string.
-
-    Args:
-        path_str: Path string to validate.
-
-    Returns:
-        Resolved Path object if valid directory, None otherwise.
-    """
-    if not path_str or not path_str.strip():
-        return None
-
-    stripped = path_str.strip()
-    if len(stripped) >= 2 and stripped[0] == '"' and stripped[-1] == '"':
-        stripped = stripped[1:-1].strip()
-
-    path_obj = Path(stripped)
-    if not path_obj.is_absolute():
-        path_obj = path_obj.resolve()
-
-    return path_obj if path_obj.exists() and path_obj.is_dir() else None

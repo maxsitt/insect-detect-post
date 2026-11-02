@@ -50,10 +50,10 @@ from PySide6.QtWidgets import (
 from qt_logging import LogCache, LogViewer
 from qt_parameters import ComboParameter, MultiComboParameter, ParameterForm, PathParameter
 
-from insectdetect_post.asset_manager import list_registered_filenames
 from insectdetect_post.config import (
     AppConfig,
     check_config_changes,
+    deep_update,
     ensure_config_files,
     get_field_constraints,
     get_field_literals,
@@ -88,12 +88,19 @@ from insectdetect_post.gui_utils import (
     create_param_form,
     extract_enabled_values,
     load_theme,
-    resolve_and_validate_path,
     restore_enabled_values,
     save_theme,
 )
 from insectdetect_post.log_utils import LogFormatter, configure_logging
 from insectdetect_post.pipeline_runner import PipelineRunner
+from insectdetect_post.pipeline_setup import (
+    DatasetCapabilities,
+    adapt_run_config,
+    available_models,
+    check_run_config,
+    resolve_and_validate_path,
+    validate_paths,
+)
 from insectdetect_post.pipeline_worker import PipelineWorker
 from insectdetect_post.styled_button import StyledButton
 from insectdetect_post.update_button import UpdateButton
@@ -201,12 +208,7 @@ class ConfigWidget(QWidget):
         # Get available configs and models
         self._configs = sorted([f.name for f in CONFIGS_PATH.glob("*.yaml")
                                 if f.name != CONFIG_SELECTOR_PATH.name])
-        local_models = {f.name for fmt in ["*.pt", "*.onnx"] for f in MODELS_PATH.glob(fmt)}
-        try:
-            registered_models = set(list_registered_filenames(MODELS_JSON))
-        except FileNotFoundError:
-            registered_models = set()
-        self._models = sorted(local_models | registered_models)
+        self._models = available_models()
 
         # Create UI layout
         self._create_ui_layout()
@@ -825,10 +827,9 @@ class ConfigWidget(QWidget):
         self._on_crop_checkbox_toggle()
 
         # Run button
-        can_run = self._can_process_images or self._can_classify_images or self._can_process_metadata
-        self.run_enabled_changed.emit(
-            can_run and self.dataset_context is not None and self.output_path is not None
-        )
+        can_run = (self.dataset_context is not None
+                   and DatasetCapabilities.from_context(self.dataset_context).can_run)
+        self.run_enabled_changed.emit(can_run and self.output_path is not None)
 
     def _toggle_box(self, box: Any | None, enabled: bool, force_uncheck: bool = True) -> None:
         """Enable or disable a parameter box (checkbox + form).
@@ -974,6 +975,10 @@ class ConfigWidget(QWidget):
         defaults = _DEFAULTS.model_dump()
         self.gpu_checkbox.setChecked(False)
 
+        # Also settings without a widget in the GUI, which sync_config() keeps from the loaded config
+        for section in ("processing", "classification", "metadata"):
+            self._config_updates[section] = defaults[section]
+
         self._loading_config = True
         try:
             self.processing_form.set_values(extract_enabled_values(defaults.get("processing", {})))
@@ -988,13 +993,20 @@ class ConfigWidget(QWidget):
             self._on_crop_checkbox_toggle()
 
     def sync_config(self) -> dict[str, Any]:
-        """Sync live form values into _config_updates and return the result."""
+        """Sync live form values into _config_updates and return the result.
+
+        The form values are merged into the loaded config, so a setting without a widget in the
+        settings panel keeps its value from the config file instead of falling back to its default.
+        """
         self._config_updates["source_path"] = self.source_path.as_posix() if self.source_path else None
         self._config_updates["output_path"] = self.output_path.as_posix() if self.output_path else None
         self._config_updates["device"] = self.device
-        self._config_updates["processing"] = restore_enabled_values(self.processing_form.values())
-        self._config_updates["classification"] = restore_enabled_values(self.classification_form.values())
-        self._config_updates["metadata"] = restore_enabled_values(self.metadata_form.values())
+        for section, form in (("processing", self.processing_form),
+                              ("classification", self.classification_form),
+                              ("metadata", self.metadata_form)):
+            merged = self._config_updates.get(section) or {}
+            deep_update(merged, restore_enabled_values(form.values()))
+            self._config_updates[section] = merged
         return self._config_updates
 
     def has_unsaved_changes(self) -> bool:
@@ -1207,20 +1219,18 @@ class ConfigWidget(QWidget):
 
         # Update capabilities
         self.dataset_context = context
-        has_detection_frames = len(context.detection_frames) > 0
-        has_crop_frames = len(context.crop_frames) > 0
-        has_metadata = len(context.metadata_files) > 0
-        self._can_process_images = has_detection_frames
-        self._can_classify_images = (has_detection_frames or has_crop_frames) and has_metadata
-        self._can_process_metadata = has_metadata
+        capabilities = DatasetCapabilities.from_context(context)
+        self._can_process_images = capabilities.can_process_images
+        self._can_classify_images = capabilities.can_classify_images
+        self._can_process_metadata = capabilities.can_process_metadata
 
         if not self._can_process_images:
-            if has_crop_frames:
+            if context.crop_frames:
                 logger.info("Crops-only dataset - image processing disabled, classification available")
             else:
                 logger.warning("No detection frames found - image processing disabled")
         if not self._can_classify_images:
-            if not has_metadata:
+            if not self._can_process_metadata:
                 logger.warning("No metadata found - classification disabled")
             else:
                 logger.warning("No detection or crop frames - classification disabled")
@@ -1236,8 +1246,10 @@ class ConfigWidget(QWidget):
                 frame_parts.append(f"{context.num_crop_frames} crops")
             self.status_updated.emit("Inspection complete: " + ", ".join(frame_parts) + refused)
         else:
+            timelapse = (f" ({context.total_timelapse_frames} timelapse frames)"
+                         if context.total_timelapse_frames else "")
             self.status_updated.emit(
-                f"Inspection complete: {context.total_timelapse_frames} timelapse frames (no metadata){refused}"
+                f"Inspection complete: no metadata found, nothing can be processed{timelapse}{refused}"
             )
 
         self.inspection_active_changed.emit(False)
@@ -1563,36 +1575,6 @@ class MainWindow(QMainWindow):
         self.progress_label.setText(status)
         self._set_controls_locked(False)
 
-    def _validate_paths(self, config: dict[str, Any]) -> str | None:
-        """Validate source and output paths from config.
-
-        Args:
-            config: Configuration dictionary.
-
-        Returns:
-            Error message string if validation fails, None if paths are valid.
-        """
-        source_path_str = config.get("source_path", "")
-        if not source_path_str or not source_path_str.strip():
-            return "No source path specified in configuration"
-
-        source_dir = resolve_and_validate_path(source_path_str)
-        if not source_dir:
-            return f"Invalid source directory:\n{source_path_str}"
-
-        output_path_str = config.get("output_path", "")
-        if not output_path_str or not output_path_str.strip():
-            return "No output path specified in configuration"
-
-        output_dir = resolve_and_validate_path(output_path_str)
-        if not output_dir:
-            return f"Invalid output directory:\n{output_path_str}"
-
-        if output_dir == source_dir or output_dir.is_relative_to(source_dir):
-            return "Output directory cannot be nested in the source directory"
-
-        return None
-
     @Slot()
     def save_config(self) -> None:
         """Save configuration (feedback handled by ConfigWidget)."""
@@ -1601,7 +1583,8 @@ class MainWindow(QMainWindow):
     @Slot()
     def run_pipeline(self) -> None:
         """Run the processing pipeline with cached context."""
-        if not self.config_widget.dataset_context:
+        context = self.config_widget.dataset_context
+        if context is None:
             QMessageBox.warning(self, "No Dataset", "Please select a dataset directory first.")
             return
 
@@ -1650,21 +1633,27 @@ class MainWindow(QMainWindow):
             return
 
         # Validate source and output paths
-        error_msg = self._validate_paths(config_dict)
+        error_msg = validate_paths(config.source_path, config.output_path)
 
         if error_msg:
             QMessageBox.critical(self, "Invalid Path", error_msg)
             logger.error(error_msg.replace('\n', ' '))
             return
 
+        # Adapt the config settings to the dataset and warn about any changes made
+        config, changes = adapt_run_config(config, context)
+        if changes:
+            logger.warning("Settings adjusted to the dataset before the run:\n  %s", "\n  ".join(changes))
+
+        # Check what would otherwise only fail once the run has started (no metadata, missing model)
+        error_msg = check_run_config(config, context)
+        if error_msg:
+            QMessageBox.critical(self, "Invalid Configuration", error_msg)
+            logger.error(error_msg.replace('\n', ' '))
+            return
+
         # Create pipeline thread
         self._pipeline_thread = QThread()
-
-        # Get cached context from config widget
-        context = self.config_widget.dataset_context
-
-        if context is None:
-            logger.warning("No cached dataset context, will scan during pipeline run")
 
         # Create pipeline runner and the worker that runs it in the pipeline thread
         config_stem = Path(self.config_widget.config_active).stem
