@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
@@ -91,6 +92,8 @@ def _resolve_and_verify(
     the registered checksum, so updating a registry entry propagates to installs that
     already downloaded the previous version. Downloads are staged to a '.part' file and
     swapped in only after verification, so a failed download leaves any existing copy intact.
+    The '.part' file is named per process, so parallel runs that download the same asset do
+    not write into the same file; the first verified copy is kept.
 
     Raises ValueError and deletes the staged file on checksum mismatch. Returns the local path.
     """
@@ -109,7 +112,7 @@ def _resolve_and_verify(
         )
 
     # Download to a temporary file so a failed download cannot destroy a usable local copy
-    staged_path = archive_path.with_name(f"{archive_name}.part")
+    staged_path = archive_path.with_name(f"{archive_name}.{os.getpid()}.part")
     logger.info("Downloading '%s'...", name)
     download_file(url, staged_path, progress_callback=progress_callback)
 
@@ -120,8 +123,14 @@ def _resolve_and_verify(
         raise ValueError(
             f"SHA-256 mismatch for '{archive_name}': expected {expected_sha256}, got {actual}"
         )
-    staged_path.replace(archive_path)
 
+    # Another process may have finished the same download meanwhile: keep its verified copy
+    if archive_path.exists() and compute_sha256(archive_path) == expected_sha256:
+        staged_path.unlink()
+        logger.info("Asset '%s' was downloaded by another process meanwhile.", name)
+        return archive_path
+
+    staged_path.replace(archive_path)
     logger.info("Asset '%s' downloaded and verified.", name)
     return archive_path
 

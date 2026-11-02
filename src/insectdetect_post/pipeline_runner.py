@@ -163,6 +163,7 @@ class PipelineRunner:
 
             self._save_pipeline_config()
             self._context = self._ensure_context()
+            logger.info("\n%s", self.context.get_summary_str(include_details=True))
 
             # Create merged metadata
             self._merged_metadata_path_value = self._create_merged_metadata()
@@ -282,20 +283,30 @@ class PipelineRunner:
     def _create_output_structure(self) -> Path:
         """Create timestamped output directory structure.
 
+        The run directory is named after the start time (one-second resolution). If a run on
+        the same source already started in that second (e.g. a second process), the new run
+        waits for the next second, so two runs never write into the same directory.
+
         Returns:
             Path to the output root directory.
         """
-        self.run_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")  # noqa: DTZ005
-        source_name = self.source_dir.name
-        output_dir_name = f"{self.run_timestamp}_{source_name}_processed"
-
         if not self.config.output_path:
             raise RuntimeError("output_path is not configured")
         processed_root = Path(self.config.output_path) / "data_processed"
-        self._output_root = processed_root / output_dir_name
-        self._layout = OutputLayout(self._output_root)
         processed_root.mkdir(exist_ok=True)
-        self.output_root.mkdir(parents=True, exist_ok=True)
+
+        while True:
+            start = datetime.now()  # noqa: DTZ005
+            self.run_timestamp = start.strftime("%Y-%m-%d_%H-%M-%S")
+            output_root = processed_root / f"{self.run_timestamp}_{self.source_dir.name}_processed"
+            try:
+                output_root.mkdir()  # fails if it exists, also for a directory created by another process
+                break
+            except FileExistsError:
+                logger.debug("Run directory '%s' already exists, waiting for the next second", output_root.name)
+                time.sleep(1 - start.microsecond / 1e6)
+        self._output_root = output_root
+        self._layout = OutputLayout(output_root)
 
         # Create subdirectories
         layout = self.layout

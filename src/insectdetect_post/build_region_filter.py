@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import random
 import shutil
 import time
@@ -239,6 +240,24 @@ def _cache_stale_reason(meta_path: Path) -> str | None:
     return None
 
 
+def _write_staged(path: Path, write: Callable[[Path], object]) -> None:
+    """Write a file through a temporary file of this process and swap it in.
+
+    A reader (e.g. a parallel run) never sees a partly written file, and a run that is
+    stopped while writing leaves the previous file intact.
+
+    Args:
+        path: File to write.
+        write: Function that writes the content to the path it is given.
+    """
+    staged_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        write(staged_path)
+        staged_path.replace(path)
+    finally:
+        staged_path.unlink(missing_ok=True)
+
+
 def _write_cache_metadata(
     meta_path: Path,
     region_type: RegionType,
@@ -251,23 +270,21 @@ def _write_cache_metadata(
     species: int
 ) -> None:
     """Record which inputs produced a cached region filter, alongside the CSV."""
-    meta_path.write_text(
-        json.dumps({
-            "region_type": region_type,
-            "region": region,
-            "phylum_filter": _scope,
-            "min_occurrence_count": min_occurrence_count,
-            "gbif_checklist_key": GBIF_CHECKLIST_KEY,
-            "gbif_occurrence_filters": OCCURRENCE_FILTERS,
-            "mapping_sha256": mapping_sha256,
-            "mapping_col_release": mapping_col_release,
-            "gbif_col_release": gbif_col_release,
-            "gbif_facet_entries": facet_entries,
-            "species": species,
-            "built_utc": datetime.now(UTC).replace(microsecond=0).isoformat(),
-        }, indent=2) + "\n",
-        encoding="utf-8"
-    )
+    record = json.dumps({
+        "region_type": region_type,
+        "region": region,
+        "phylum_filter": _scope,
+        "min_occurrence_count": min_occurrence_count,
+        "gbif_checklist_key": GBIF_CHECKLIST_KEY,
+        "gbif_occurrence_filters": OCCURRENCE_FILTERS,
+        "mapping_sha256": mapping_sha256,
+        "mapping_col_release": mapping_col_release,
+        "gbif_col_release": gbif_col_release,
+        "gbif_facet_entries": facet_entries,
+        "species": species,
+        "built_utc": datetime.now(UTC).replace(microsecond=0).isoformat(),
+    }, indent=2) + "\n"
+    _write_staged(meta_path, lambda path: path.write_text(record, encoding="utf-8"))
 
 
 def _backoff_seconds(error: Exception, attempt: int) -> float:
@@ -493,7 +510,7 @@ def build_region_filter_csv(
         )
 
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    matched.write_csv(cache_path)
+    _write_staged(cache_path, matched.write_csv)
     _write_cache_metadata(
         meta_path, region_type, region, min_occurrence_count, mapping_sha256,
         mapping_col_release, gbif_col_release, len(region_species_counts), matched.height

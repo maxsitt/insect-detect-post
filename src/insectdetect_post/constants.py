@@ -123,7 +123,7 @@ def get_bioclip_country_options() -> tuple[str, ...]:
         return tuple(row["iso2"] for row in csv.DictReader(f))
 
 # Default thread-pool size for image processing operations (e.g. crop/overlay)
-MAX_WORKERS: int = min((os.cpu_count() or 4) + 4, 32)
+MAX_WORKERS: int = min((os.process_cpu_count() or 4) + 4, 32)
 
 # Validation: defaults for stratified subsampling
 VALIDATION_PROB_BIN_EDGES_DEFAULT = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
