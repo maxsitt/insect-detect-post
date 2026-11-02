@@ -397,7 +397,8 @@ def process_images(
             # Safe to draw in-place: crops (numpy views into img) are already written to disk above
             _draw_overlays(img, boxes, labels, confs, track_ids)
             cv2.imwrite(str(ov_path), img)
-            local_stats["frames_processed"] += 1
+
+        local_stats["frames_processed"] = 1
 
         return {
             "group_idx": group_idx,
