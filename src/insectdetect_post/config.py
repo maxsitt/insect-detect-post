@@ -506,6 +506,34 @@ def _migrate_raw(raw: dict[str, object]) -> list[str]:
     return messages + track_messages
 
 
+def _find_unknown_keys(
+    raw: dict[str, object],
+    model_cls: type[BaseModel],
+    path: str = ""
+) -> list[str]:
+    """Return the keys in raw that model_cls does not define, recursing into nested models.
+
+    Args:
+        raw:       Raw dict loaded from YAML.
+        model_cls: Pydantic model class whose fields are the known keys.
+        path:      Dot-separated key path prefix used in the messages.
+
+    Returns:
+        List of human-readable messages, one per unknown key (its dot-separated path).
+    """
+    unknown: list[str] = []
+    for key, value in raw.items():
+        full_path = f"{path}.{key}" if path else str(key)
+        field_info = model_cls.model_fields.get(str(key))
+        if field_info is None:
+            unknown.append(f"  {full_path}")
+            continue
+        annotation = field_info.annotation
+        if isinstance(annotation, type) and issubclass(annotation, BaseModel) and isinstance(value, dict):
+            unknown.extend(_find_unknown_keys(cast(dict[str, object], value), annotation, full_path))
+    return unknown
+
+
 def deep_update(base: dict[str, object], updates: dict[str, object]) -> None:
     """Recursively merge a nested dict of updates into a base dict, in-place.
 
@@ -574,18 +602,21 @@ def load_config_selector() -> ConfigSelectorModel:
     return selector
 
 
-def load_config_yaml(config_path: Path) -> AppConfig:
+def load_config_yaml(config_path: Path, write_back: bool = True) -> AppConfig:
     """Load a YAML config file, clamp out-of-range values and return a validated AppConfig.
 
     Missing keys are filled with Pydantic defaults. Settings of older config versions
-    are moved to their current keys (see _migrate_raw()). Out-of-range numeric values
-    are clamped to their allowed bounds and a warning is logged for each correction.
+    are moved to their current keys (see _migrate_raw()). Unknown keys are ignored and
+    out-of-range numeric values are clamped to their allowed bounds, with a warning for each.
 
     Args:
-        config_path: Path to the active config YAML file.
+        config_path: Path to the config YAML file.
+        write_back: If True, write the validated config back to the file when it differs
+                    (e.g. moved, clamped, missing or unknown keys). If False, the file is
+                    never changed.
 
     Returns:
-        Validated AppConfig reflecting the final on-disk state.
+        Validated AppConfig (with write_back, also the new content of the file).
     """
     with open(config_path, "r", encoding="utf-8") as f:
         raw: dict[str, object] = yaml.safe_load(f) or {}
@@ -595,6 +626,13 @@ def load_config_yaml(config_path: Path) -> AppConfig:
         logger.warning(
             "Config settings in '%s' of an older version were moved to their current keys:\n%s",
             config_path, "\n".join(moved)
+        )
+
+    unknown = _find_unknown_keys(raw, AppConfig)
+    if unknown:
+        logger.warning(
+            "Unknown config keys in '%s' are ignored%s (misspelled, or from another version?):\n%s",
+            config_path, " and removed from the file" if write_back else "", "\n".join(unknown)
         )
 
     raw, corrections = _clamp_raw(raw, AppConfig)
@@ -610,7 +648,7 @@ def load_config_yaml(config_path: Path) -> AppConfig:
         raise ValueError(f"Invalid configuration in '{config_path}':\n{e}") from e
 
     validated_dict = config.model_dump()
-    if moved or corrections or raw != validated_dict:
+    if write_back and (moved or corrections or raw != validated_dict):
         with open(config_path, "w", encoding="utf-8") as f:
             yaml.dump(validated_dict, f, **_YAML_DUMP_KWARGS)
 
