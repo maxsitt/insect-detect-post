@@ -6,14 +6,15 @@ Author:   Maximilian Sittinger (https://github.com/maxsitt)
 AI use:   Developed with AI coding assistance, reviewed by the author
 Docs:     https://maxsitt.github.io/insect-detect-docs/
 
-Provides the theme persistence shared by the processing and validation GUIs,
-styled widget and parameter form factories, and conversion between nested
-config dicts and flat ParameterForm values.
+Provides the theme persistence and Ctrl+C handling shared by the processing and
+validation GUIs, styled widget and parameter form factories, and conversion between
+nested config dicts and flat ParameterForm values.
 
 Functions:
     active_theme(): Return the applied theme, or the default theme before one is applied.
     load_theme(): Return the stored theme name.
     save_theme(): Store the selected theme name.
+    close_on_ctrl_c(): Close a window on Ctrl+C in the terminal, like with its close button.
     create_groupbox(): Create a styled QGroupBox for a config ParameterForm.
     create_param_form(): Create a child parameter form and add it to the parent form.
     create_num_param(): Create a numeric parameter with slider.
@@ -24,11 +25,13 @@ Functions:
 from __future__ import annotations
 
 import logging
+import signal
+from types import FrameType
 from typing import Any, Literal
 
 import qt_themes
-from PySide6.QtCore import QSettings
-from PySide6.QtWidgets import QGroupBox, QVBoxLayout
+from PySide6.QtCore import QSettings, QTimer
+from PySide6.QtWidgets import QGroupBox, QVBoxLayout, QWidget
 from qt_parameters import CollapsibleBox, FloatParameter, IntParameter, ParameterForm
 
 from insectdetect_post.constants import SETTINGS_APP, SETTINGS_ORG, THEME_DEFAULT
@@ -38,6 +41,9 @@ logger = logging.getLogger(__name__)
 
 # QSettings key of the theme (shared by the processing and the validation window)
 _SETTINGS_KEY_THEME = "theme"
+
+# Interval in which Python checks for Ctrl+C while the Qt event loop waits (milliseconds)
+_SIGNAL_CHECK_INTERVAL_MS = 200
 
 
 def active_theme() -> qt_themes.Theme:
@@ -68,6 +74,29 @@ def save_theme(theme_name: str) -> None:
         theme_name: Name of the selected theme.
     """
     QSettings(SETTINGS_ORG, SETTINGS_APP).setValue(_SETTINGS_KEY_THEME, theme_name)
+
+
+def close_on_ctrl_c(window: QWidget) -> None:
+    """Close a window on Ctrl+C in the terminal, like with its close button.
+
+    The close runs through the window's closeEvent() (e.g. it asks before cancelling a running
+    pipeline). Python only handles signals while it runs code, not while the Qt event loop waits,
+    so a timer gives it the chance every _SIGNAL_CHECK_INTERVAL_MS.
+
+    Args:
+        window: Main window of the application.
+    """
+    def close_window() -> None:
+        logger.info("Ctrl+C received - closing the window")
+        window.close()
+
+    def on_sigint(_signum: int, _frame: FrameType | None) -> None:
+        QTimer.singleShot(0, close_window)  # close from the event loop, not inside the signal handler
+
+    signal.signal(signal.SIGINT, on_sigint)
+    timer = QTimer(window)
+    timer.timeout.connect(lambda: None)
+    timer.start(_SIGNAL_CHECK_INTERVAL_MS)
 
 
 def create_groupbox(title: str, color: str, form: ParameterForm) -> QGroupBox:

@@ -159,6 +159,7 @@ from insectdetect_post.constants import (
 from insectdetect_post.exceptions import RunSearchCancelled, ValidationRunError
 from insectdetect_post.gui_utils import (
     active_theme,
+    close_on_ctrl_c,
     create_groupbox,
     create_num_param,
     load_theme,
@@ -6454,6 +6455,7 @@ def main() -> None:
     window = ValidationWindow(standalone=True)  # standalone mode offers updates
     window.showMaximized()
     window.open_run(sys.argv[1] if len(sys.argv) > 1 else None)
+    close_on_ctrl_c(window)
     sys.exit(app.exec())
 
 

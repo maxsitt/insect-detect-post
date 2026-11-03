@@ -16,7 +16,7 @@ Classes:
     MainWindow: Main application window with pipeline controls, log viewer and validation access.
 
 Functions:
-    main: Main entry point for the post-processing GUI application.
+    main(): Entry point for the post-processing GUI application.
 """
 
 from __future__ import annotations
@@ -83,6 +83,7 @@ from insectdetect_post.dataset_context import DatasetContext
 from insectdetect_post.dataset_worker import DatasetInspector
 from insectdetect_post.gui_utils import (
     active_theme,
+    close_on_ctrl_c,
     create_groupbox,
     create_num_param,
     create_param_form,
@@ -1831,6 +1832,7 @@ def main() -> None:
     qt_themes.set_theme(load_theme())
     window = MainWindow()
     window.show()
+    close_on_ctrl_c(window)
     sys.exit(app.exec())
 
 
