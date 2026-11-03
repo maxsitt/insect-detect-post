@@ -165,6 +165,8 @@ def classify_imgs_bioclip(
         # Create taxa filter mask for the requested taxa
         taxa_label = ", ".join(filter_taxa)
         taxon_mask = _build_taxa_mask(classifier, filter_taxa)
+        logger.info("Taxa filter '%s': %d of %d BioCLIP species",
+                    taxa_label, sum(taxon_mask), len(taxon_mask))
 
         if region is not None:
             def region_filter_progress(pct: int, _total: int, message: str) -> None:
@@ -180,6 +182,9 @@ def classify_imgs_bioclip(
                 *region, progress_callback=region_filter_progress
             )
             region_mask = classifier.create_taxa_filter(Rank.SPECIES, region_species)
+            # A species name can belong to several BioCLIP species (the same name in different lineages)
+            logger.info("Region filter %s: %d species names match %d of %d BioCLIP species",
+                        region_label, len(region_species), sum(region_mask), len(region_mask))
 
             # Keep the applied filter files with the run, for reproducibility
             filters_dir = OutputLayout(output_dir).filters_dir
@@ -199,8 +204,9 @@ def classify_imgs_bioclip(
             )
 
         classifier.apply_filter(combined_mask)
-        logger.info("Applied taxa='%s', %s filter: %d/%d species kept",
-                    taxa_label, region_label, sum(combined_mask), len(combined_mask))
+        logger.info("Applied taxa='%s', %s filter: %d of %d BioCLIP species kept%s",
+                    taxa_label, region_label, sum(combined_mask), len(combined_mask),
+                    " (in both filters)" if region is not None else "")
 
     # Compute dynamic chunk size based on available RAM
     n_species = classifier.get_txt_embeddings().shape[1]

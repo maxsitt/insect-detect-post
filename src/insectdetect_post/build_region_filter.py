@@ -565,8 +565,13 @@ def load_region_species(
         )
         species.update(pl.read_csv(cache_path, columns=["species"])["species"].to_list())
 
-    logger.info("Region filter for %s %s: %d unique species across all of them",
-                region_type, ", ".join(regions), len(species))
+    if total == 1:
+        label, scope = f"{region_type} '{regions[0]}'", "there"
+    else:
+        plural = "countries" if region_type == "country" else "continents"
+        label, scope = f"{plural} '{', '.join(regions)}'", "in at least one of them"
+    logger.info("Region filter for %s: %d BioCLIP species (%s) with >=%d GBIF occurrence records %s",
+                label, len(species), _scope, min_occurrence_count, scope)
     return sorted(species)
 
 
