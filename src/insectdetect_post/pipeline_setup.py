@@ -73,7 +73,8 @@ def resolve_and_validate_path(path_str: str | None) -> Path | None:
     """Resolve and validate a path string.
 
     Strips surrounding whitespace and double quotes (e.g. from a path pasted from the
-    file manager) and resolves relative paths against the current working directory.
+    file manager), expands a leading '~' to the home directory and resolves relative paths
+    against the current working directory.
 
     Args:
         path_str: Path string to validate.
@@ -88,7 +89,7 @@ def resolve_and_validate_path(path_str: str | None) -> Path | None:
     if len(stripped) >= 2 and stripped[0] == '"' and stripped[-1] == '"':
         stripped = stripped[1:-1].strip()
 
-    path_obj = Path(stripped)
+    path_obj = Path(stripped).expanduser()
     if not path_obj.is_absolute():
         path_obj = path_obj.resolve()
 

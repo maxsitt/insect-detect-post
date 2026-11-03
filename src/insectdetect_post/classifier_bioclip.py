@@ -33,9 +33,13 @@ from insectdetect_post.classifier_utils import (
     validate_metadata,
 )
 from insectdetect_post.constants import RANK_ORDER, OutputLayout
+from insectdetect_post.log_utils import adopt_library_logger
 
 # Create module-level logger
 logger = logging.getLogger(__name__)
+
+# Route logger from 'huggingface_hub' through the shared logging handlers
+adopt_library_logger("huggingface_hub")
 
 # BioCLIP Rank and taxon name each filter_arthropods.taxa value maps to for create_taxa_filter()
 _TAXA_RANKS: dict[str, tuple[Rank, str]] = {

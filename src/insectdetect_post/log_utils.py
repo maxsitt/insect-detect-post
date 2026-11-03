@@ -1,4 +1,4 @@
-"""Log format and handlers shared by the GUIs, the pipeline run log and the validation session log.
+"""Log format and handlers shared by the GUIs, the command line, the run log and the session log.
 
 Source:   https://github.com/maxsitt/insect-detect-post
 License:  GNU AGPLv3 (https://choosealicense.com/licenses/agpl-3.0/)
@@ -15,6 +15,7 @@ Classes:
 
 Functions:
     configure_logging(): Configure logging for an entry point.
+    adopt_library_logger(): Route a library logger with its own terminal handler through the shared handlers.
     open_log_file(): Attach a log file that records this package and warnings of other packages.
     close_log_file(): Detach and close a handler from open_log_file().
 """
@@ -25,7 +26,7 @@ import logging
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 # Logger of this package (parent of all module loggers)
 _PACKAGE_LOGGER = "insectdetect_post"
@@ -63,7 +64,7 @@ class LogFormatter(logging.Formatter):
         return super().format(record)
 
 
-def configure_logging(console_level: int = logging.INFO) -> None:
+def configure_logging(console_level: int = logging.INFO, stream: Any = None) -> None:
     """Configure logging for an entry point.
 
     Terminal output with the shared layout; this package at DEBUG, the noisy loggers of other
@@ -73,8 +74,9 @@ def configure_logging(console_level: int = logging.INFO) -> None:
 
     Args:
         console_level: Lowest level shown in the terminal.
+        stream: Object with write() and flush() the terminal output goes to (default: sys.stderr).
     """
-    handler = logging.StreamHandler()
+    handler = logging.StreamHandler(stream)
     handler.setFormatter(LogFormatter())
     handler.setLevel(console_level)
     # 'pygbif' calls logging.basicConfig() on import: 'force=True' replaces the handler it installed
@@ -82,6 +84,21 @@ def configure_logging(console_level: int = logging.INFO) -> None:
     logging.getLogger(_PACKAGE_LOGGER).setLevel(logging.DEBUG)
     for name in _QUIET_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
+
+
+def adopt_library_logger(name: str) -> None:
+    """Route a library logger with its own terminal handler through the shared handlers.
+
+    Some libraries add their own handler on import, which prints their records a second time, in
+    another layout or to stdout. Call this after the import: their records are then shown once,
+    in the shared layout, and also reach the log viewer and (from WARNING) the log files.
+
+    Args:
+        name: Name of the library's top-level logger.
+    """
+    library_logger = logging.getLogger(name)
+    library_logger.handlers.clear()
+    library_logger.propagate = True
 
 
 class _LogFileFilter(logging.Filter):

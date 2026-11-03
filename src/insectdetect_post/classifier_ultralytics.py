@@ -31,9 +31,13 @@ from insectdetect_post.classifier_utils import (
     save_classification_results,
     validate_metadata,
 )
+from insectdetect_post.log_utils import adopt_library_logger
 
 # Create module-level logger
 logger = logging.getLogger(__name__)
+
+# Route logger from 'ultralytics' through the shared logging handlers
+adopt_library_logger("ultralytics")
 
 
 def classify_imgs_ultralytics(

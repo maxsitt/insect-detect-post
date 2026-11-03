@@ -6,8 +6,8 @@
 [![Python](https://img.shields.io/badge/python-3.13%20%7C%203.14-blue.svg)](https://www.python.org/)
 [![DOI Zenodo](https://zenodo.org/badge/DOI/10.5281/zenodo.21822140.svg)](https://doi.org/10.5281/zenodo.21822140)
 
-This repository contains GUI-based software for post-processing of data captured
-with the [Insect Detect](https://maxsitt.github.io/insect-detect-docs/) camera trap.
+This repository contains software for post-processing of data captured with the
+[Insect Detect](https://maxsitt.github.io/insect-detect-docs/) camera trap.
 It turns the images and metadata captured by the camera trap into cropped,
 classified and filtered results ready for analysis, by combining image processing,
 AI-based classification and metadata aggregation into a single configurable pipeline.
@@ -45,6 +45,8 @@ AI-based classification and metadata aggregation into a single configurable pipe
 - **Desktop GUI** - configure and run the pipeline with a PySide6-based interface
   that inspects the source dataset, reports live progress and supports cancelling
   a running pipeline at any time.
+- **Command line** - run the pipeline with settings from a config file without the GUI,
+  e.g. on a headless server, with the same functionality and results as the GUI.
 
 ---
 
@@ -157,15 +159,17 @@ packages while they are in use, so if the dependencies changed, the required
 
 ## Usage
 
+> [!IMPORTANT]
+> Always include `--no-sync`. Running `uv run gui` or `uv run process` without it re-syncs
+> the environment without your chosen extra, which uninstalls PyTorch and the ONNX runtime.
+
+### GUI
+
 Start the GUI by running:
 
 ``` bash
 uv run --no-sync gui
 ```
-
-> [!IMPORTANT]
-> Always include `--no-sync`. Running `uv run gui` without it re-syncs the environment
-> without your chosen extra, which uninstalls PyTorch and the ONNX runtime.
 
 1. **Select a source directory** - select a directory that contains images and
    metadata captured with the [`insect-detect`](https://github.com/maxsitt/insect-detect)
@@ -187,6 +191,19 @@ from the release assets.
 > or again if the BioCLIP repo is updated. This produces extra log output, including
 > HTTP requests and a warning about "unauthenticated requests to the HF Hub" - this is
 > expected and can be safely ignored. No `HF_TOKEN` is required to use this pipeline.
+
+### Command line
+
+To run the pipeline without the GUI (e.g. on a headless server), use the `process` command.
+It runs the settings of a config file through the same checks as the GUI and produces the
+same results. By default, the active config file is used (set in `config_selector.yaml`).
+Unlike the GUI, it never modifies the config file and stops on unknown keys (e.g. a misspelled
+setting). On success, the path of the run directory is printed to stdout. For all options
+(e.g. a different config file, source or output directory) and the exit codes, run:
+
+``` bash
+uv run --no-sync process --help
+```
 
 ### Configuration profiles
 
